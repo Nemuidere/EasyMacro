@@ -116,7 +116,7 @@ class TestValidateInRange:
     
     def test_invalid_range_raises_error(self):
         """Test that invalid range raises ValueError."""
-        with pytest.raises(ValueError, match="min_value .* cannot be greater than max_value"):
+        with pytest.raises(ValueError, match="min_value.*cannot be greater than max_value"):
             validate_in_range(5, 10, 0, "value")
 
 

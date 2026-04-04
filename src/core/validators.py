@@ -83,6 +83,11 @@ def validate_in_range(value: float, min_val: float, max_val: float, field_name: 
     Raises:
         ValueError: If value is out of range.
     """
+    if min_val > max_val:
+        raise ValueError(
+            f"{field_name}: min_value ({min_val}) cannot be greater than max_value ({max_val})"
+        )
+    
     if not (min_val <= value <= max_val):
         raise ValueError(
             f"{field_name} must be between {min_val} and {max_val}, got {value}"

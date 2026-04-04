@@ -40,7 +40,7 @@ class Macro(EasyMacroBaseModel):
         status: Current execution status.
     """
     
-    name: str = Field(min_length=1, max_length=100, description="Macro name")
+    name: str = Field(max_length=100, description="Macro name")
     description: str = Field(default="", max_length=500, description="Macro description")
     actions: list[Action] = Field(default_factory=list, description="List of actions")
     hotkey: Optional[str] = Field(default=None, description="Hotkey to trigger macro")

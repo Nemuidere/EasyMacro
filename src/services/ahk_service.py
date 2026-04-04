@@ -14,7 +14,6 @@ from typing import Optional, Tuple
 from pathlib import Path
 
 from ahk import AHK
-from ahk.keyboard import Key
 
 from src.core.exceptions import MacroExecutionError
 from src.core.logger import get_logger
@@ -198,11 +197,7 @@ class AHKService:
         Args:
             key: Key to hold.
         """
-        key_obj = getattr(Key, key.upper(), None)
-        if key_obj:
-            self._ahk.key_down(key_obj)
-        else:
-            self._ahk.key_down(key)
+        self._ahk.key_down(key)
     
     def _key_up(self, key: str) -> None:
         """Internal method to release a key.
@@ -210,11 +205,7 @@ class AHKService:
         Args:
             key: Key to release.
         """
-        key_obj = getattr(Key, key.upper(), None)
-        if key_obj:
-            self._ahk.key_up(key_obj)
-        else:
-            self._ahk.key_up(key)
+        self._ahk.key_up(key)
     
     def get_mouse_position(self) -> Tuple[int, int]:
         """Get current mouse position.
