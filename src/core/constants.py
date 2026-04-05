@@ -15,6 +15,7 @@ APP_AUTHOR = "EasyMacro Team"
 DEFAULT_CONFIG_PATH = Path("data/config.json")
 DEFAULT_MACROS_PATH = Path("data/macros.json")
 DEFAULT_LOG_PATH = Path("data/logs/easymacro.log")
+DEFAULT_STATS_PATH = Path("data/stats.json")
 
 # Default settings
 DEFAULT_JITTER_RADIUS = 5  # pixels
@@ -37,3 +38,7 @@ MOUSE_BUTTONS = ["left", "right", "middle"]
 
 # Action types
 ACTION_TYPES = ["click", "right_click", "double_click", "delay", "mouse_move", "key_press"]
+
+# Modifier key order for press/release
+MODIFIER_KEY_DOWN_ORDER = ["ctrl", "alt", "shift"]
+MODIFIER_KEY_UP_ORDER = ["shift", "alt", "ctrl"]  # Reverse order

@@ -4,8 +4,9 @@ Macro execution engine for EasyMacro.
 Handles the execution of macro actions with optional randomization.
 """
 
-from typing import Optional, Callable
+from typing import Optional, Callable, TYPE_CHECKING
 from enum import Enum
+from time import time
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from src.models.macro import Macro, MacroStatus
@@ -16,6 +17,11 @@ from src.core.state import StateManager, AppState
 from src.core.event_bus import EventBus, get_event_bus
 from src.core.exceptions import MacroError, MacroExecutionError
 from src.core.logger import get_logger
+from src.core.constants import MODIFIER_KEY_DOWN_ORDER, MODIFIER_KEY_UP_ORDER
+from src.services.stats_service import StatsService, get_stats_service
+
+if TYPE_CHECKING:
+    from src.services.mouse_movement_service import MouseMovementService
 
 
 class ExecutionState(Enum):
@@ -56,6 +62,8 @@ class MacroEngine(QObject):
         self,
         randomization_engine: RandomizationEngine,
         state_manager: StateManager,
+        stats_service: StatsService,
+        mouse_movement_service: Optional['MouseMovementService'] = None,
         parent: Optional[QObject] = None
     ):
         """Initialize macro engine.
@@ -63,6 +71,8 @@ class MacroEngine(QObject):
         Args:
             randomization_engine: Engine for applying randomization.
             state_manager: Application state manager.
+            stats_service: Statistics tracking service.
+            mouse_movement_service: Optional service for mouse movement detection.
             parent: Optional Qt parent.
         
         Raises:
@@ -74,9 +84,13 @@ class MacroEngine(QObject):
             raise ValueError("Randomization engine cannot be None")
         if state_manager is None:
             raise ValueError("State manager cannot be None")
+        if stats_service is None:
+            raise ValueError("Stats service cannot be None")
         
         self._randomization = randomization_engine
         self._state = state_manager
+        self._stats = stats_service
+        self._mouse_movement_service = mouse_movement_service
         self._logger = get_logger("macro_engine")
         self._event_bus = get_event_bus()
         
@@ -85,6 +99,17 @@ class MacroEngine(QObject):
         self._execution_state: ExecutionState = ExecutionState.IDLE
         self._repeat_count: int = 0
         self._current_repeat: int = 0
+        self._macro_start_time: float = 0.0
+        
+        # Stop on mouse movement settings
+        self._stop_on_mouse_movement: bool = True
+        self._mouse_movement_threshold: int = 50
+        
+        # Connect to mouse movement signal if service available
+        if self._mouse_movement_service:
+            self._mouse_movement_service.movement_exceeded.connect(
+                self._on_mouse_movement_exceeded
+            )
         
         # Timer for delays
         self._delay_timer = QTimer(self)
@@ -118,10 +143,20 @@ class MacroEngine(QObject):
         self._current_repeat = 0
         self._repeat_count = macro.repeat_count
         self._execution_state = ExecutionState.RUNNING
+        self._macro_start_time = time()
         
         # Update state
         self._state.set(AppState.RUNNING)
         self._state.set_current_macro(macro.id)
+        
+        # Start mouse movement monitoring if enabled
+        if self._stop_on_mouse_movement and self._mouse_movement_service:
+            try:
+                self._mouse_movement_service.start_monitoring(
+                    threshold_pixels=self._mouse_movement_threshold
+                )
+            except Exception as e:
+                self._logger.warning(f"Failed to start mouse movement monitoring: {e}")
         
         # Emit signals
         self.macro_started.emit(macro.id)
@@ -169,6 +204,10 @@ class MacroEngine(QObject):
             return
         
         self._logger.info(f"Stopping macro: {self._current_macro.name}")
+        
+        # Stop mouse movement monitoring
+        if self._mouse_movement_service and self._mouse_movement_service.is_monitoring():
+            self._mouse_movement_service.stop_monitoring()
         
         self._delay_timer.stop()
         self._execution_state = ExecutionState.STOPPED
@@ -268,21 +307,38 @@ class MacroEngine(QObject):
         """
         # Apply jitter if randomization is enabled
         x, y = action.x, action.y
-        if self._current_macro.randomization_enabled:
+        if self._current_macro and self._current_macro.randomization_enabled:
             x, y = self._randomization.apply_jitter(action.x, action.y)
 
-        self._logger.debug(f"Click at ({x}, {y}) with button {action.button}")
+        self._logger.debug(f"Click at ({x}, {y}) with button {action.button}, modifiers {action.modifiers}")
 
         # Get AHK service
         from src.services.ahk_service import get_ahk_service
         ahk = get_ahk_service()
 
-        # Determine click count based on action type
-        click_count = 1
-        if action.action_type == ActionType.DOUBLE_CLICK:
-            click_count = 2
+        # Press modifiers in order
+        for mod in MODIFIER_KEY_DOWN_ORDER:
+            if mod in action.modifiers:
+                ahk.key_down(mod)
 
-        ahk.click(x, y, button=action.button, click_count=click_count)
+        try:
+            # Determine click count based on action type
+            click_count = 1
+            if action.action_type == ActionType.DOUBLE_CLICK:
+                click_count = 2
+
+            # Perform click
+            ahk.click(x, y, button=action.button, click_count=click_count)
+            
+        finally:
+            # Release modifiers in reverse order
+            for mod in MODIFIER_KEY_UP_ORDER:
+                if mod in action.modifiers:
+                    ahk.key_up(mod)
+
+        # Track clicks in stats
+        if self._current_macro:
+            self._stats.update_clicks(self._current_macro.id, click_count)
     
     def _execute_delay(self, action: DelayAction) -> None:
         """Execute a delay action.
@@ -357,18 +413,26 @@ class MacroEngine(QObject):
         """Complete the current macro."""
         if self._current_macro is None:
             return
-        
+
         self._logger.info(f"Macro completed: {self._current_macro.name}")
-        
+
         macro_id = self._current_macro.id
-        
+
+        # Track execution time in stats
+        execution_time = time() - self._macro_start_time
+        self._stats.update_time(macro_id, execution_time)
+
+        # Stop mouse movement monitoring
+        if self._mouse_movement_service and self._mouse_movement_service.is_monitoring():
+            self._mouse_movement_service.stop_monitoring()
+
         self._execution_state = ExecutionState.IDLE
         self._state.set(AppState.IDLE)
         self._state.set_current_macro(None)
-        
+
         self.macro_completed.emit(macro_id)
         self._event_bus.macro_stopped.emit(macro_id)
-        
+
         self._current_macro = None
     
     def _handle_error(self, error_message: str) -> None:
@@ -390,8 +454,43 @@ class MacroEngine(QObject):
         
         self.macro_error.emit(macro_id, error_message)
         self._event_bus.macro_error.emit(macro_id, error_message)
-        
+
         self._current_macro = None
+
+    def _on_mouse_movement_exceeded(self, distance: float) -> None:
+        """Handle mouse movement exceeded signal.
+
+        Stops the current macro when mouse movement exceeds threshold.
+
+        Args:
+            distance: Distance moved in pixels.
+        """
+        if self._current_macro is None:
+            return
+
+        self._logger.info(
+            f"Mouse movement exceeded threshold: {distance:.1f}px, "
+            f"stopping macro: {self._current_macro.name}"
+        )
+
+        # Stop the macro
+        self.stop_macro()
+
+    def set_stop_on_mouse_movement(self, enabled: bool) -> None:
+        """Enable or disable stop on mouse movement.
+
+        Args:
+            enabled: True to enable stop on mouse movement, False otherwise.
+        """
+        self._stop_on_mouse_movement = enabled
+
+    def set_mouse_movement_threshold(self, threshold: int) -> None:
+        """Set mouse movement threshold in pixels.
+
+        Args:
+            threshold: Movement threshold in pixels.
+        """
+        self._mouse_movement_threshold = threshold
 
 
 # Global singleton instance
@@ -417,17 +516,21 @@ def get_macro_engine() -> MacroEngine:
 
 def init_macro_engine(
     randomization_engine: RandomizationEngine,
-    state_manager: StateManager
+    state_manager: StateManager,
+    stats_service: StatsService,
+    mouse_movement_service: Optional['MouseMovementService'] = None
 ) -> MacroEngine:
     """Initialize the global macro engine.
-    
+
     Args:
         randomization_engine: Randomization engine.
         state_manager: State manager.
-    
+        stats_service: Statistics tracking service.
+        mouse_movement_service: Optional mouse movement service.
+
     Returns:
         MacroEngine: The newly created engine instance.
-    
+
     Raises:
         RuntimeError: If engine already initialized.
         ValueError: If any argument is None.
@@ -435,5 +538,7 @@ def init_macro_engine(
     global _macro_engine
     if _macro_engine is not None:
         raise RuntimeError("Macro engine already initialized.")
-    _macro_engine = MacroEngine(randomization_engine, state_manager)
+    _macro_engine = MacroEngine(
+        randomization_engine, state_manager, stats_service, mouse_movement_service
+    )
     return _macro_engine

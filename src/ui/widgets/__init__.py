@@ -4,6 +4,6 @@ EasyMacro UI Widgets.
 This package contains reusable UI widgets.
 """
 
-# TODO: Add widget exports when implemented
+from src.ui.widgets.hotkey_input import HotkeyInput
 
-__all__ = []
+__all__ = ["HotkeyInput"]

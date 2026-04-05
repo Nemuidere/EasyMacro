@@ -33,6 +33,7 @@ class ClickAction(EasyMacroBaseModel):
         x: X coordinate.
         y: Y coordinate.
         button: Mouse button (left, right, middle).
+        modifiers: Modifier keys to hold during click.
         jitter_radius: Randomization radius in pixels.
     """
     
@@ -40,6 +41,7 @@ class ClickAction(EasyMacroBaseModel):
     x: int = Field(ge=0, description="X coordinate")
     y: int = Field(ge=0, description="Y coordinate")
     button: str = Field(default="left", description="Mouse button")
+    modifiers: list[str] = Field(default_factory=list, description="Modifier keys to hold during click")
     jitter_radius: int = Field(default=5, ge=0, description="Randomization radius in pixels")
     
     @field_validator("button")
@@ -60,6 +62,26 @@ class ClickAction(EasyMacroBaseModel):
         if v.lower() not in valid_buttons:
             raise ValueError(f"Button must be one of {valid_buttons}, got {v}")
         return v.lower()
+    
+    @field_validator("modifiers")
+    @classmethod
+    def validate_modifiers(cls, v: list[str]) -> list[str]:
+        """Validate modifier keys.
+        
+        Args:
+            v: Modifiers list to validate.
+        
+        Returns:
+            Validated modifiers list.
+        
+        Raises:
+            ValueError: If any modifier is invalid.
+        """
+        valid_modifiers = {"ctrl", "alt", "shift"}
+        for mod in v:
+            if mod.lower() not in valid_modifiers:
+                raise ValueError(f"Modifier must be one of {valid_modifiers}, got {mod}")
+        return [m.lower() for m in v]
 
 
 class DelayAction(EasyMacroBaseModel):

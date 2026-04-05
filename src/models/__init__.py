@@ -16,6 +16,7 @@ from src.models.action import (
 )
 from src.models.macro import Macro, MacroStatus
 from src.models.settings import AppSettings, RandomizationSettings, HotkeySettings, Theme
+from src.models.stats import MacroStats, GlobalStats
 
 __all__ = [
     # Base
@@ -37,4 +38,7 @@ __all__ = [
     "RandomizationSettings",
     "HotkeySettings",
     "Theme",
+    # Stats
+    "MacroStats",
+    "GlobalStats",
 ]

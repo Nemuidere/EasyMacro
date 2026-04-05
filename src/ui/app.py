@@ -21,6 +21,12 @@ from src.core.randomization import init_randomization_engine
 from src.core.hotkey_manager import init_hotkey_manager, get_hotkey_manager
 from src.services.macro_service import init_macro_service, get_macro_service
 from src.services.ahk_service import init_ahk_service
+from src.services.stats_service import init_stats_service, get_stats_service
+from src.services.position_capture_service import init_position_capture_service
+from src.services.mouse_movement_service import init_mouse_movement_service, get_mouse_movement_service
+from src.core.macro_engine import init_macro_engine
+from src.core.randomization import get_randomization_engine
+from src.core.state import get_state_manager
 from src.models.settings import AppSettings, RandomizationSettings
 
 
@@ -128,6 +134,25 @@ class Application(QObject):
         # Initialize AHK service - fails fast if AHK is not available
         init_ahk_service()
         self._logger.info("AHK service initialized")
+
+        # Initialize StatsService
+        stats_path = Path("data/stats.json")
+        init_stats_service(stats_path)
+
+        # Initialize PositionCaptureService
+        init_position_capture_service()
+
+        # Initialize MouseMovementService
+        init_mouse_movement_service()
+
+        # Initialize MacroEngine with required dependencies
+        randomization_engine = get_randomization_engine()
+        state_manager = get_state_manager()
+        stats_service = get_stats_service()
+        mouse_movement_service = get_mouse_movement_service()
+        init_macro_engine(randomization_engine, state_manager, stats_service, mouse_movement_service)
+
+        self._logger.info("All services initialized")
     
     def _create_main_window(self) -> None:
         """Create the main window."""

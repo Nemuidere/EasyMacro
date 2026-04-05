@@ -58,11 +58,15 @@ class HotkeySettings(EasyMacroBaseModel):
         pause_all: Hotkey to pause all macros.
         resume_all: Hotkey to resume all macros.
         stop_all: Hotkey to stop all macros.
+        capture_position_key: Hotkey to capture current mouse position.
+        cancel_capture_key: Hotkey to cancel position capture.
     """
     
     pause_all: str = Field(default="ctrl+shift+p", description="Pause all macros")
     resume_all: str = Field(default="ctrl+shift+r", description="Resume all macros")
     stop_all: str = Field(default="ctrl+shift+s", description="Stop all macros")
+    capture_position_key: str = Field(default="f2", description="Capture mouse position")
+    cancel_capture_key: str = Field(default="escape", description="Cancel position capture")
 
 
 class AppSettings(EasyMacroBaseModel):
@@ -77,6 +81,8 @@ class AppSettings(EasyMacroBaseModel):
         check_updates: Check for updates on startup.
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
         config_version: Configuration schema version.
+        stop_on_mouse_movement: Stop macros when mouse moves.
+        mouse_movement_threshold: Threshold in pixels for mouse movement detection.
     """
     
     theme: Theme = Field(default=Theme.DARK, description="UI theme")
@@ -93,6 +99,13 @@ class AppSettings(EasyMacroBaseModel):
     check_updates: bool = Field(default=True, description="Check for updates on startup")
     log_level: str = Field(default="INFO", description="Logging level")
     config_version: int = Field(default=1, description="Configuration schema version")
+    stop_on_mouse_movement: bool = Field(default=True, description="Stop macros on mouse movement")
+    mouse_movement_threshold: int = Field(
+        default=50,
+        ge=0,
+        le=500,
+        description="Mouse movement threshold in pixels"
+    )
     
     @field_validator("log_level")
     @classmethod

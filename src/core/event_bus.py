@@ -39,6 +39,12 @@ class EventBus(QObject):
     # Settings events
     settings_changed = Signal(str, object)  # key, value
     
+    # Stats events
+    stats_updated = Signal(str, int, float)  # macro_id, clicks, time_seconds
+    stats_saved = Signal()  # emitted when stats are persisted
+    position_captured = Signal(int, int)  # x, y coordinates
+    position_capture_cancelled = Signal()  # when capture is cancelled
+    
     # Application events
     app_ready = Signal()
     app_shutdown = Signal()

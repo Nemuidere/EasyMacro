@@ -20,6 +20,7 @@ from PySide6.QtGui import QFont
 
 from src.ui.pages.dashboard_page import DashboardPage
 from src.ui.pages.macros_page import MacrosPage
+from src.ui.pages.editor_page import EditorPage
 from src.ui.pages.settings_page import SettingsPage
 
 
@@ -122,6 +123,7 @@ class MainWindow(QMainWindow):
         nav_items = [
             ("dashboard", "Dashboard"),
             ("macros", "Macros"),
+            ("editor", "Editor"),
             ("settings", "Settings"),
         ]
         
@@ -148,15 +150,19 @@ class MainWindow(QMainWindow):
         # Dashboard page
         dashboard = DashboardPage()
         self._add_page("dashboard", dashboard)
-        
+
         # Macros page
         macros = MacrosPage()
         self._add_page("macros", macros)
-        
+
+        # Editor page
+        editor = EditorPage()
+        self._add_page("editor", editor)
+
         # Settings page
         settings = SettingsPage()
         self._add_page("settings", settings)
-        
+
         # Navigate to dashboard by default
         self._navigate_to("dashboard")
     
@@ -172,7 +178,26 @@ class MainWindow(QMainWindow):
     
     def _connect_signals(self) -> None:
         """Connect internal signals."""
-        pass
+        # Connect macros page to editor page
+        macros_page = self._pages.get("macros")
+        editor_page = self._pages.get("editor")
+
+        if macros_page and editor_page:
+            macros_page.create_macro_requested.connect(lambda: self._navigate_to("editor"))
+            macros_page.edit_macro_requested.connect(self._on_edit_macro_requested)
+
+    def _on_edit_macro_requested(self, macro_id: str) -> None:
+        """Handle edit macro request.
+
+        Args:
+            macro_id: ID of macro to edit.
+        """
+        editor_page = self._pages.get("editor")
+        if not editor_page:
+            return
+
+        editor_page.set_macro_id(macro_id)
+        self._navigate_to("editor")
     
     def _navigate_to(self, page_id: str) -> None:
         """Navigate to a page.
@@ -197,10 +222,28 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event) -> None:
         """Handle window close event.
-        
+
         Args:
             event: Close event.
         """
+        # Stop any running services
+        try:
+            from src.services.mouse_movement_service import get_mouse_movement_service
+
+            mouse_service = get_mouse_movement_service()
+            if mouse_service.is_monitoring():
+                mouse_service.stop_monitoring()
+        except RuntimeError:
+            pass  # Service not initialized
+
+        try:
+            from src.services.position_capture_service import get_position_capture_service
+
+            capture_service = get_position_capture_service()
+            capture_service.stop_capture()
+        except RuntimeError:
+            pass  # Service not initialized
+
         self.close_event.emit()
         event.ignore()  # We'll handle closing ourselves
     
