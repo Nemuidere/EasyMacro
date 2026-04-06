@@ -107,21 +107,14 @@ class EditorPage(QWidget):
         
         layout.addLayout(name_layout)
         
-        # Hotkey input
-        hotkey_layout = QHBoxLayout()
-        hotkey_label = QLabel("Macro Hotkey:")
-        hotkey_label.setFont(QFont("Segoe UI", 12))
-        hotkey_layout.addWidget(hotkey_label)
-
+        # Hotkey input (HotkeyInput is a QGroupBox with its own title)
         self._hotkey_input = HotkeyInput(
-            label="",
+            label="Macro Hotkey",
             input_id=f"macro_hotkey_{self._macro_id or 'new'}",
             parent=self,
             on_conflict=self._check_hotkey_conflict
         )
-        hotkey_layout.addWidget(self._hotkey_input)
-
-        layout.addLayout(hotkey_layout)
+        layout.addWidget(self._hotkey_input)
         
         # Running macro indicator (shown when editing running macro)
         self._running_indicator = QLabel("Macro is currently running - stop it before editing")
