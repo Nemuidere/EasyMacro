@@ -84,7 +84,8 @@ class HotkeyInput(QGroupBox):
         label: str,
         parent: Optional[QWidget] = None,
         on_conflict: Optional[Callable[[str], bool]] = None,
-        input_id: Optional[str] = None
+        input_id: Optional[str] = None,
+        default_hotkey: str = ""
     ):
         """Initialize hotkey input widget.
 
@@ -95,6 +96,7 @@ class HotkeyInput(QGroupBox):
                         Receives hotkey string, returns True if accepted.
             input_id: Optional unique identifier for this input instance,
                      used for conflict detection and debugging.
+            default_hotkey: Default hotkey to reset to (empty string for no default).
         """
         super().__init__(parent)
 
@@ -104,10 +106,15 @@ class HotkeyInput(QGroupBox):
         self._label_text = label
         self._on_conflict = on_conflict
         self._input_id = input_id or label.lower().replace(" ", "_")
+        self._default_hotkey = default_hotkey
         self._logger = get_logger("hotkey_input")
         self._state = HotkeyState(keys=frozenset(), is_capturing=False)
         self._current_hotkey = ""
         self._keyboard_listener = None
+
+        # Validate default_hotkey
+        if default_hotkey and not self._is_valid_hotkey(default_hotkey):
+            raise ValueError(f"Invalid default_hotkey format: {default_hotkey}")
 
         self._setup_ui()
         self._setup_signals()
@@ -139,14 +146,19 @@ class HotkeyInput(QGroupBox):
 
         # Capture button
         self._capture_button = QPushButton("Capture")
-        self._capture_button.setCheckable(True)
-        self._capture_button.clicked.connect(self._on_capture_clicked)
+        self._capture_button.clicked.connect(self._start_capture)
         layout.addWidget(self._capture_button)
 
-        # Clear button
-        self._clear_button = QPushButton("Clear")
-        self._clear_button.clicked.connect(self._on_clear_clicked)
-        layout.addWidget(self._clear_button)
+        # Cancel button (only visible during capture)
+        self._cancel_button = QPushButton("Cancel")
+        self._cancel_button.setVisible(False)
+        self._cancel_button.clicked.connect(self._stop_capture)
+        layout.addWidget(self._cancel_button)
+
+        # Default button
+        self._default_button = QPushButton("Default")
+        self._default_button.clicked.connect(self._on_default_clicked)
+        layout.addWidget(self._default_button)
 
     def _setup_signals(self) -> None:
         """Set up internal signals for thread-safe updates."""
@@ -167,18 +179,6 @@ class HotkeyInput(QGroupBox):
         self._state = HotkeyState(keys=keys, is_capturing=True)
         self._update_display()
 
-    def _on_capture_clicked(self, checked: bool) -> None:
-        """Handle capture button click.
-
-        Args:
-            checked: Whether button is now checked.
-        """
-        if not checked:
-            self._stop_capture()
-            return
-
-        self._start_capture()
-
     def _start_capture(self) -> None:
         """Start listening for hotkey input."""
         self._state = self._state.start_capturing()
@@ -186,6 +186,9 @@ class HotkeyInput(QGroupBox):
         self._hotkey_label.setStyleSheet(
             "font-weight: bold; padding: 5px; color: #2196F3;"
         )
+
+        # Show cancel button during capture
+        self._cancel_button.setVisible(True)
 
         try:
             self._keyboard_listener = self._create_keyboard_listener()
@@ -298,7 +301,9 @@ class HotkeyInput(QGroupBox):
     def _stop_capture(self) -> None:
         """Stop listening for hotkey input."""
         self._state = self._state.stop_capturing()
-        self._capture_button.setChecked(False)
+
+        # Hide cancel button when capture stops
+        self._cancel_button.setVisible(False)
 
         # Reset display to current hotkey
         self._update_hotkey_display()
@@ -313,9 +318,9 @@ class HotkeyInput(QGroupBox):
             finally:
                 self._keyboard_listener = None
 
-    def _on_clear_clicked(self) -> None:
-        """Handle clear button click."""
-        self._set_hotkey("")
+    def _on_default_clicked(self) -> None:
+        """Handle default button click - reset to default hotkey."""
+        self._set_hotkey(self._default_hotkey)
         self._stop_capture()
 
     def _set_hotkey(self, hotkey: str) -> None:
@@ -405,8 +410,10 @@ class HotkeyInput(QGroupBox):
     def cleanup(self) -> None:
         """Clean up resources before destruction."""
         self._stop_capture()
+        self._cancel_button.setVisible(False)
 
     def hideEvent(self, event) -> None:
         """Handle hide event - stop capture."""
         self._stop_capture()
+        self._cancel_button.setVisible(False)
         super().hideEvent(event)

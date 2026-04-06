@@ -33,6 +33,7 @@ from src.services.position_capture_service import get_position_capture_service
 from src.core.state import get_state_manager
 from src.core.event_bus import get_event_bus
 from src.core.logger import get_logger
+from src.ui.widgets.hotkey_input import HotkeyInput
 
 
 class EditorPage(QWidget):
@@ -46,6 +47,7 @@ class EditorPage(QWidget):
     - Mouse button selection
     - Modifier key toggles
     - Randomization settings
+    - Macro hotkey assignment
     
     Signals:
         save_requested: Emitted when macro is saved
@@ -104,6 +106,22 @@ class EditorPage(QWidget):
         name_layout.addWidget(self._name_input)
         
         layout.addLayout(name_layout)
+        
+        # Hotkey input
+        hotkey_layout = QHBoxLayout()
+        hotkey_label = QLabel("Macro Hotkey:")
+        hotkey_label.setFont(QFont("Segoe UI", 12))
+        hotkey_layout.addWidget(hotkey_label)
+
+        self._hotkey_input = HotkeyInput(
+            label="",
+            input_id=f"macro_hotkey_{self._macro_id or 'new'}",
+            parent=self,
+            on_conflict=self._check_hotkey_conflict
+        )
+        hotkey_layout.addWidget(self._hotkey_input)
+
+        layout.addLayout(hotkey_layout)
         
         # Running macro indicator (shown when editing running macro)
         self._running_indicator = QLabel("Macro is currently running - stop it before editing")
@@ -246,6 +264,36 @@ class EditorPage(QWidget):
 
         layout.addLayout(button_layout)
 
+    def _check_hotkey_conflict(self, hotkey: str) -> bool:
+        """Check if hotkey conflicts with existing macros.
+        
+        Args:
+            hotkey: Hotkey string to check.
+        
+        Returns:
+            True if no conflict, False if conflict exists.
+        """
+        if not hotkey:
+            return True
+        
+        try:
+            macro_service = get_macro_service()
+            macros = macro_service.get_all()
+            
+            for macro in macros:
+                # Skip current macro if editing
+                if self._is_editing and macro.id == self._macro_id:
+                    continue
+                
+                if macro.hotkey and macro.hotkey.lower() == hotkey.lower():
+                    self._logger.warning(f"Hotkey conflict: {hotkey} already used by macro '{macro.name}'")
+                    return False
+            
+            return True
+        except RuntimeError as e:
+            self._logger.warning(f"Macro service not initialized: {e}")
+            return True  # Allow if service not available
+
     def _connect_signals(self) -> None:
         """Connect widget signals to handlers."""
         # Position mode toggle
@@ -316,10 +364,12 @@ class EditorPage(QWidget):
         # Get capture key from settings (default: f2)
         capture_key = "f2"  # TODO: Get from AppSettings
 
-        # Start capture via service
+        # Start capture via service (with 200ms delay to allow window to minimize)
         try:
             capture_service = get_position_capture_service()
-            if not capture_service.start_capture(capture_key=capture_key, timeout_ms=10000):
+            if not capture_service.start_capture_delayed(
+                capture_key=capture_key, timeout_ms=30000, delay_ms=200
+            ):
                 self._logger.warning("Capture already in progress")
                 return
         except RuntimeError as e:
@@ -334,7 +384,11 @@ class EditorPage(QWidget):
         # Show instruction message
         self._capture_message = QMessageBox(self)
         self._capture_message.setWindowTitle("Capture Position")
-        self._capture_message.setText(f"Press {capture_key.upper()} to capture mouse position\nPress Esc to cancel")
+        self._capture_message.setText(
+            f"Press {capture_key.upper()} to capture mouse position\n"
+            f"Press Esc to cancel\n"
+            f"(Timeout in 30 seconds)"
+        )
         self._capture_message.setStandardButtons(QMessageBox.NoButton)
         self._capture_message.show()
 
@@ -493,6 +547,11 @@ class EditorPage(QWidget):
                 randomization_enabled=randomization_enabled,
             )
         
+        # Get hotkey
+        hotkey = self._hotkey_input.get_hotkey()
+        if hotkey:
+            macro.hotkey = hotkey
+        
         return macro
     
     def _load_macro(self, macro_id: str) -> None:
@@ -540,6 +599,12 @@ class EditorPage(QWidget):
         
         # Set randomization
         self._randomization_checkbox.setChecked(macro.randomization_enabled)
+        
+        # Load hotkey
+        if macro.hotkey:
+            self._hotkey_input.set_hotkey(macro.hotkey)
+        else:
+            self._hotkey_input.set_hotkey("")
         
         # Extract actions
         click_action: Optional[ClickAction] = None
@@ -604,6 +669,9 @@ class EditorPage(QWidget):
         self._name_input.clear()
         self._name_input.setStyleSheet("")
         
+        # Reset hotkey
+        self._hotkey_input.set_hotkey("")
+        
         self._cursor_radio.setChecked(True)
         self._x_spinbox.setValue(0)
         self._y_spinbox.setValue(0)
@@ -650,6 +718,10 @@ class EditorPage(QWidget):
             event_bus.position_capture_cancelled.disconnect(self._on_position_cancelled)
         except RuntimeError:
             pass  # EventBus not initialized
+        
+        # Cleanup hotkey input
+        if hasattr(self, '_hotkey_input'):
+            self._hotkey_input.cleanup()
     
     def closeEvent(self, event) -> None:
         """Handle widget close event."""

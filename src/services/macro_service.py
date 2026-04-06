@@ -148,6 +148,10 @@ class MacroService:
             self._logger.info(f"Created macro: {macro.name}")
         else:
             self._logger.info(f"Updated macro: {macro.name}")
+        
+        # Emit signal after successful save
+        if self._event_bus is not None:
+            self._event_bus.macro_saved.emit(macro)
     
     def delete(self, macro_id: str) -> None:
         """Delete a macro.

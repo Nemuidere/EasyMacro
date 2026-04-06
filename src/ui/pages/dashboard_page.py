@@ -259,6 +259,7 @@ class DashboardPage(QWidget):
             event_bus.stats_updated.connect(self._on_stats_updated)
             event_bus.macro_started.connect(self._on_macro_started)
             event_bus.macro_stopped.connect(self._on_macro_stopped)
+            event_bus.macro_saved.connect(self._on_macro_saved)
         except RuntimeError:
             self._logger.warning("Event bus not initialized yet")
     
@@ -292,6 +293,15 @@ class DashboardPage(QWidget):
             macro_id: ID of the stopped macro.
         """
         self._update_running_status()
+    
+    def _on_macro_saved(self, macro) -> None:
+        """Handle macro saved event.
+        
+        Args:
+            macro: The saved Macro object.
+        """
+        self._logger.debug(f"Macro saved: {macro.name}")
+        self._refresh_stats()
     
     def _update_running_status(self) -> None:
         """Update the status bar based on running macro state."""

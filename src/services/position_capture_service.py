@@ -54,7 +54,7 @@ class PositionCaptureService(QObject):
     
     Usage:
         service = PositionCaptureService()
-        service.start_capture(capture_key="f2", timeout_ms=10000)
+        service.start_capture(capture_key="f2", timeout_ms=30000)
         # ... wait for position_captured signal or timeout
         service.stop_capture()
     """
@@ -73,7 +73,7 @@ class PositionCaptureService(QObject):
         self._state_lock = Lock()
         
         self._capture_key: str = "f2"
-        self._timeout_ms: int = 10000
+        self._timeout_ms: int = 30000
         
         self._keyboard_listener: Optional[keyboard.Listener] = None
         self._timeout_timer: Optional[QTimer] = None
@@ -100,12 +100,14 @@ class PositionCaptureService(QObject):
         
         self._logger.info("PositionCaptureService initialized")
     
-    def start_capture(self, capture_key: str = "f2", timeout_ms: int = 10000) -> bool:
-        """Start listening for position capture hotkey.
+    def start_capture(self, capture_key: str = "f2", timeout_ms: int = 30000) -> bool:
+        """Start listening for position capture hotkey immediately.
+        
+        Note: Use start_capture_delayed() when window needs to be minimized first.
         
         Args:
             capture_key: Key to listen for (default: "f2").
-            timeout_ms: Timeout in milliseconds (default: 10000).
+            timeout_ms: Timeout in milliseconds (default: 30000 = 30 seconds).
         
         Returns:
             True if capture started, False if already capturing.
@@ -146,7 +148,7 @@ class PositionCaptureService(QObject):
         self._timeout_timer.timeout.connect(self._on_timeout_triggered)
         self._timeout_timer.start(timeout_ms)
         
-        # Start keyboard listener
+        # Start keyboard listener immediately
         try:
             self._keyboard_listener = keyboard.Listener(
                 on_press=self._on_key_press,
@@ -161,6 +163,57 @@ class PositionCaptureService(QObject):
         
         self._logger.info(f"Started position capture with key '{capture_key}', timeout {timeout_ms}ms")
         return True
+    
+    def start_capture_delayed(self, capture_key: str = "f2", timeout_ms: int = 30000, delay_ms: int = 200) -> None:
+        """Start capture after delay to allow window state changes.
+        
+        Args:
+            capture_key: Key to listen for (default: "f2").
+            timeout_ms: Timeout in milliseconds (default: 30000 = 30 seconds).
+            delay_ms: Delay before starting listener (default: 200ms).
+        """
+        # Store parameters
+        self._capture_key = capture_key.lower()
+        self._timeout_ms = timeout_ms
+        
+        # Early exit: check if already capturing
+        if self._is_capturing():
+            self._logger.warning("Capture already in progress, ignoring start request")
+            return
+        
+        # Transition to capturing state immediately
+        self._set_state(CaptureState.CAPTURING)
+        
+        # Start timeout timer
+        self._timeout_timer = QTimer(self)
+        self._timeout_timer.setSingleShot(True)
+        self._timeout_timer.timeout.connect(self._on_timeout_triggered)
+        self._timeout_timer.start(timeout_ms)
+        
+        # Delay keyboard listener start
+        QTimer.singleShot(delay_ms, self._start_keyboard_listener)
+        
+        self._logger.info(f"Delayed capture scheduled with key '{capture_key}', timeout {timeout_ms}ms, delay {delay_ms}ms")
+    
+    def _start_keyboard_listener(self) -> None:
+        """Start the keyboard listener (called after delay)."""
+        if not self._is_capturing():
+            self._logger.debug("Capture cancelled before listener started")
+            return
+        
+        try:
+            self._keyboard_listener = keyboard.Listener(
+                on_press=self._on_key_press,
+                on_release=self._on_key_release
+            )
+            self._keyboard_listener.start()
+            self._logger.debug("Keyboard listener started")
+        except Exception as e:
+            self._logger.error(f"Failed to start keyboard listener: {e}")
+            self._cleanup()
+            self._set_state(CaptureState.CANCELLED)
+            if self._event_bus is not None:
+                self._event_bus.position_capture_cancelled.emit()
     
     def stop_capture(self) -> None:
         """Stop capturing and cleanup resources.
@@ -204,6 +257,28 @@ class PositionCaptureService(QObject):
             self._state = new_state
             self._logger.debug(f"State transition: {old_state.value} → {new_state.value}")
     
+    def _get_key_name(self, key) -> Optional[str]:
+        """Get string name for a key.
+        
+        Args:
+            key: pynput key object.
+        
+        Returns:
+            Key name string or None.
+        """
+        from pynput.keyboard import Key
+        
+        if isinstance(key, Key):
+            return key.name.lower()
+        
+        try:
+            if hasattr(key, 'char') and key.char:
+                return key.char.lower()
+        except AttributeError:
+            pass
+        
+        return None
+    
     def _on_key_press(self, key) -> None:
         """Handle key press from pynput listener (background thread).
         
@@ -215,11 +290,18 @@ class PositionCaptureService(QObject):
             return
         
         try:
+            # Log key press for debugging
+            key_name = self._get_key_name(key)
+            if key_name:
+                self._logger.debug(f"Key pressed: {key_name}")
+            
             # Check for capture key
             if self._is_capture_key(key):
+                self._logger.info(f"Capture key '{self._capture_key}' pressed")
                 self._handle_capture_key()
             # Check for escape key (cancel)
             elif key == keyboard.Key.esc:
+                self._logger.info("Escape key pressed, cancelling capture")
                 self._capture_cancelled_signal.emit()
         except Exception as e:
             self._logger.error(f"Error handling key press: {e}")

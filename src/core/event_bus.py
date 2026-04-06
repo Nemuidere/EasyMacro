@@ -26,6 +26,7 @@ class EventBus(QObject):
     macro_stopped = Signal(str)  # macro_id
     macro_paused = Signal(str)  # macro_id
     macro_error = Signal(str, str)  # macro_id, error_message
+    macro_saved = Signal(object)  # Macro object
     
     # Hotkey events
     hotkey_registered = Signal(str)  # hotkey_id
