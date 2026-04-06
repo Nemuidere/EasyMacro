@@ -78,6 +78,7 @@ class HotkeyInput(QGroupBox):
     # Internal signals for thread-safe UI updates from background thread
     _keys_updated = Signal(object)  # frozenset of keys
     _capture_finalized = Signal()
+    _key_released = Signal()
 
     def __init__(
         self,
@@ -165,6 +166,7 @@ class HotkeyInput(QGroupBox):
         # Connect signals to slots - queued connection ensures main thread execution
         self._keys_updated.connect(self._on_keys_updated)
         self._capture_finalized.connect(self._finalize_capture)
+        self._key_released.connect(self._on_key_released)
 
     @Slot(object)
     def _on_keys_updated(self, keys: frozenset) -> None:
@@ -225,11 +227,8 @@ class HotkeyInput(QGroupBox):
         def on_release(key) -> None:
             """Handle key release event - runs in background thread."""
             try:
-                key_name = self._get_key_name(key)
-                if key_name:
-                    # Emit signal to finalize capture in main thread
-                    # This schedules capture after brief delay for multi-key combinations
-                    QTimer.singleShot(200, self._capture_finalized.emit)
+                # Emit signal to schedule finalization in main thread
+                self._key_released.emit()
             except Exception as e:
                 self._logger.error(f"Error in key release handler: {e}")
 
@@ -289,6 +288,19 @@ class HotkeyInput(QGroupBox):
 
         self._set_hotkey(hotkey_str)
         self._stop_capture()
+
+    @Slot()
+    def _on_key_released(self) -> None:
+        """Handle key release in main thread - schedule finalization.
+
+        This is called from the background thread via signal emission,
+        ensuring QTimer.singleShot runs in the main thread.
+        """
+        if not self._state.is_capturing:
+            return
+
+        # Schedule finalization after brief delay for multi-key combinations
+        QTimer.singleShot(200, self._capture_finalized.emit)
 
     def _show_conflict_dialog(self, hotkey: str) -> None:
         """Show conflict error dialog.
