@@ -704,17 +704,31 @@ class EditorPage(QWidget):
         """Clean up resources when page is hidden/destroyed."""
         self._stop_capture()
 
-        # Disconnect from EventBus
+        # Disconnect from EventBus - wrap each disconnect in try/except
         try:
             event_bus = get_event_bus()
-            event_bus.position_captured.disconnect(self._on_position_captured)
-            event_bus.position_capture_cancelled.disconnect(self._on_position_cancelled)
+            try:
+                event_bus.position_captured.disconnect(self._on_position_captured)
+            except (RuntimeError, TypeError):
+                pass  # Signal not connected or EventBus destroyed
         except RuntimeError:
             pass  # EventBus not initialized
-        
+
+        try:
+            event_bus = get_event_bus()
+            try:
+                event_bus.position_capture_cancelled.disconnect(self._on_position_cancelled)
+            except (RuntimeError, TypeError):
+                pass  # Signal not connected or EventBus destroyed
+        except RuntimeError:
+            pass  # EventBus not initialized
+
         # Cleanup hotkey input
         if hasattr(self, '_hotkey_input'):
-            self._hotkey_input.cleanup()
+            try:
+                self._hotkey_input.cleanup()
+            except Exception:
+                pass  # Ignore cleanup errors during shutdown
     
     def closeEvent(self, event) -> None:
         """Handle widget close event."""

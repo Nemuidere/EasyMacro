@@ -407,6 +407,13 @@ class PositionCaptureService(QObject):
         if self._event_bus is not None:
             self._event_bus.position_capture_cancelled.emit()
     
+    def __del__(self):
+        """Destructor - ensure cleanup on garbage collection."""
+        try:
+            self._cleanup()
+        except Exception:
+            pass  # Ignore errors during destruction
+
     def _cleanup(self) -> None:
         """Cleanup resources (timer and keyboard listener)."""
         # Stop and cleanup timer
@@ -414,11 +421,13 @@ class PositionCaptureService(QObject):
             try:
                 if self._timeout_timer.isActive():
                     self._timeout_timer.stop()
+                # Delete the timer to prevent Qt warnings
+                self._timeout_timer.deleteLater()
             except Exception as e:
                 self._logger.error(f"Error stopping timer: {e}")
             finally:
                 self._timeout_timer = None
-        
+
         # Stop and cleanup keyboard listener
         if self._keyboard_listener is not None:
             try:
