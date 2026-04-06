@@ -181,6 +181,11 @@ class HotkeyInput(QGroupBox):
 
     def _start_capture(self) -> None:
         """Start listening for hotkey input."""
+        # Guard: Already capturing, do nothing
+        if self._state.is_capturing:
+            self._logger.debug("Already capturing, ignoring start request")
+            return
+
         self._state = self._state.start_capturing()
         self._hotkey_label.setText("Press keys...")
         self._hotkey_label.setStyleSheet(
