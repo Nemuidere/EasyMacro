@@ -222,7 +222,7 @@ class SettingsPage(QWidget):
             label="Pause All Macros",
             input_id="pause_all",
             parent=self,
-            on_conflict=self._check_hotkey_conflict,
+            on_conflict=lambda h: self._check_hotkey_conflict(h, "pause_all"),
             default_hotkey=DEFAULT_PAUSE_ALL
         )
         self._hotkey_inputs["pause_all"] = self._pause_hotkey_input
@@ -233,7 +233,7 @@ class SettingsPage(QWidget):
             label="Resume All Macros",
             input_id="resume_all",
             parent=self,
-            on_conflict=self._check_hotkey_conflict,
+            on_conflict=lambda h: self._check_hotkey_conflict(h, "resume_all"),
             default_hotkey=DEFAULT_RESUME_ALL
         )
         self._hotkey_inputs["resume_all"] = self._resume_hotkey_input
@@ -244,7 +244,7 @@ class SettingsPage(QWidget):
             label="Stop All Macros",
             input_id="stop_all",
             parent=self,
-            on_conflict=self._check_hotkey_conflict,
+            on_conflict=lambda h: self._check_hotkey_conflict(h, "stop_all"),
             default_hotkey=DEFAULT_STOP_ALL
         )
         self._hotkey_inputs["stop_all"] = self._stop_hotkey_input
@@ -255,7 +255,7 @@ class SettingsPage(QWidget):
             label="Capture Position",
             input_id="capture_position",
             parent=self,
-            on_conflict=self._check_hotkey_conflict,
+            on_conflict=lambda h: self._check_hotkey_conflict(h, "capture_position"),
             default_hotkey=DEFAULT_CAPTURE_POSITION
         )
         self._hotkey_inputs["capture_position"] = self._capture_pos_hotkey_input
@@ -266,7 +266,7 @@ class SettingsPage(QWidget):
             label="Cancel Capture",
             input_id="cancel_capture",
             parent=self,
-            on_conflict=self._check_hotkey_conflict,
+            on_conflict=lambda h: self._check_hotkey_conflict(h, "cancel_capture"),
             default_hotkey=DEFAULT_CANCEL_CAPTURE
         )
         self._hotkey_inputs["cancel_capture"] = self._cancel_capture_hotkey_input

@@ -24,6 +24,7 @@ from src.services.ahk_service import init_ahk_service
 from src.services.stats_service import init_stats_service, get_stats_service
 from src.services.position_capture_service import init_position_capture_service
 from src.services.mouse_movement_service import init_mouse_movement_service, get_mouse_movement_service
+from src.services.macro_hotkey_service import init_macro_hotkey_service, get_macro_hotkey_service
 from src.core.macro_engine import init_macro_engine
 from src.core.randomization import get_randomization_engine
 from src.core.state import get_state_manager
@@ -151,6 +152,18 @@ class Application(QObject):
         stats_service = get_stats_service()
         mouse_movement_service = get_mouse_movement_service()
         init_macro_engine(randomization_engine, state_manager, stats_service, mouse_movement_service)
+
+        # Initialize macro hotkey service
+        init_macro_hotkey_service()
+        macro_hotkey_service = get_macro_hotkey_service()
+        macro_hotkey_service.initialize(
+            hotkey_manager=hotkey_manager,
+            macro_service=macro_service,
+            event_bus=event_bus
+        )
+
+        # Register all existing macro hotkeys
+        macro_hotkey_service.register_all_macros()
 
         self._logger.info("All services initialized")
     

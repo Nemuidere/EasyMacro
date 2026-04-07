@@ -139,19 +139,44 @@ class MacroService:
         """
         if macro is None:
             raise ValueError("Macro cannot be None")
-        
+
         is_new = macro.id not in self._macros
         self._macros[macro.id] = macro
         self._save_all()
-        
+
         if is_new:
             self._logger.info(f"Created macro: {macro.name}")
         else:
             self._logger.info(f"Updated macro: {macro.name}")
-        
+
         # Emit signal after successful save
         if self._event_bus is not None:
             self._event_bus.macro_saved.emit(macro)
+
+        # Register/unregister hotkey if changed
+        try:
+            from src.services.macro_hotkey_service import get_macro_hotkey_service
+            macro_hotkey_service = get_macro_hotkey_service()
+
+            # Get old macro to check if hotkey changed
+            old_macro = self._macros.get(macro.id)
+            old_hotkey = old_macro.hotkey if old_macro else None
+
+            if macro.hotkey != old_hotkey:
+                # Unregister old hotkey if exists
+                if old_hotkey:
+                    macro_hotkey_service.unregister_macro_hotkey(macro.id)
+
+                # Register new hotkey if exists
+                if macro.hotkey and macro.enabled:
+                    from typing import Callable
+                    def make_callback(m: Macro) -> Callable[[], None]:
+                        def callback():
+                            macro_hotkey_service._on_macro_hotkey_pressed(m.id)
+                        return callback
+                    macro_hotkey_service.register_macro_hotkey(macro, make_callback(macro))
+        except RuntimeError:
+            pass  # MacroHotkeyService not initialized
     
     def delete(self, macro_id: str) -> None:
         """Delete a macro.
@@ -168,11 +193,19 @@ class MacroService:
         
         if macro_id not in self._macros:
             raise MacroNotFoundError(f"Macro not found: {macro_id}")
-        
+
         macro = self._macros.pop(macro_id)
         self._save_all()
-        
+
         self._logger.info(f"Deleted macro: {macro.name}")
+
+        # Unregister hotkey
+        try:
+            from src.services.macro_hotkey_service import get_macro_hotkey_service
+            macro_hotkey_service = get_macro_hotkey_service()
+            macro_hotkey_service.unregister_macro_hotkey(macro_id)
+        except RuntimeError:
+            pass  # MacroHotkeyService not initialized
     
     def exists(self, macro_id: str) -> bool:
         """Check if a macro exists.

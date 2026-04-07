@@ -18,6 +18,11 @@ from src.services.mouse_movement_service import (
     get_mouse_movement_service,
     init_mouse_movement_service,
 )
+from src.services.macro_hotkey_service import (
+    MacroHotkeyService,
+    get_macro_hotkey_service,
+    init_macro_hotkey_service,
+)
 
 __all__ = [
     "MacroService",
@@ -36,4 +41,7 @@ __all__ = [
     "MouseMovementService",
     "get_mouse_movement_service",
     "init_mouse_movement_service",
+    "MacroHotkeyService",
+    "get_macro_hotkey_service",
+    "init_macro_hotkey_service",
 ]
