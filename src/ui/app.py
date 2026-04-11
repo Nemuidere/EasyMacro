@@ -156,6 +156,12 @@ class Application(QObject):
         # Initialize macro hotkey service
         init_macro_hotkey_service()
         macro_hotkey_service = get_macro_hotkey_service()
+        
+        # Get required dependencies
+        hotkey_manager = get_hotkey_manager()
+        macro_service = get_macro_service()
+        event_bus = get_event_bus()
+        
         macro_hotkey_service.initialize(
             hotkey_manager=hotkey_manager,
             macro_service=macro_service,
