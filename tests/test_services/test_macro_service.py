@@ -16,7 +16,7 @@ from src.core.exceptions import MacroNotFoundError
 class TestMacroService:
     """Tests for MacroService class."""
     
-    def test_init_creates_file(self, temp_macros_file):
+    def test_init_creates_file(self, temp_macros_file, initialized_event_bus):
         """Test that initialization creates the file if it doesn't exist."""
         # Delete the file
         temp_macros_file.unlink()
@@ -30,7 +30,7 @@ class TestMacroService:
         with pytest.raises(ValueError, match="Macros path cannot be None"):
             MacroService(None)
     
-    def test_save_and_get_macro(self, temp_macros_file, sample_macro):
+    def test_save_and_get_macro(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test saving and retrieving a macro."""
         service = MacroService(temp_macros_file)
         
@@ -41,21 +41,21 @@ class TestMacroService:
         assert retrieved.id == sample_macro.id
         assert retrieved.name == sample_macro.name
     
-    def test_get_nonexistent_macro_raises_error(self, temp_macros_file):
+    def test_get_nonexistent_macro_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that getting nonexistent macro raises MacroNotFoundError."""
         service = MacroService(temp_macros_file)
         
         with pytest.raises(MacroNotFoundError, match="Macro not found"):
             service.get("nonexistent_id")
     
-    def test_get_with_empty_id_raises_error(self, temp_macros_file):
+    def test_get_with_empty_id_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that getting with empty ID raises ValueError."""
         service = MacroService(temp_macros_file)
         
         with pytest.raises(ValueError, match="Macro ID cannot be empty"):
             service.get("")
     
-    def test_get_all_returns_list(self, temp_macros_file, sample_macro):
+    def test_get_all_returns_list(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test that get_all returns a list."""
         service = MacroService(temp_macros_file)
         service.save(sample_macro)
@@ -65,7 +65,7 @@ class TestMacroService:
         assert isinstance(macros, list)
         assert len(macros) == 1
     
-    def test_get_enabled_returns_only_enabled(self, temp_macros_file):
+    def test_get_enabled_returns_only_enabled(self, temp_macros_file, initialized_event_bus):
         """Test that get_enabled returns only enabled macros."""
         service = MacroService(temp_macros_file)
         
@@ -80,14 +80,14 @@ class TestMacroService:
         assert len(enabled) == 1
         assert enabled[0].name == "Enabled"
     
-    def test_save_with_none_raises_error(self, temp_macros_file):
+    def test_save_with_none_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that saving None raises ValueError."""
         service = MacroService(temp_macros_file)
         
         with pytest.raises(ValueError, match="Macro cannot be None"):
             service.save(None)
     
-    def test_delete_macro(self, temp_macros_file, sample_macro):
+    def test_delete_macro(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test deleting a macro."""
         service = MacroService(temp_macros_file)
         service.save(sample_macro)
@@ -97,21 +97,21 @@ class TestMacroService:
         with pytest.raises(MacroNotFoundError):
             service.get(sample_macro.id)
     
-    def test_delete_nonexistent_raises_error(self, temp_macros_file):
+    def test_delete_nonexistent_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that deleting nonexistent macro raises MacroNotFoundError."""
         service = MacroService(temp_macros_file)
         
         with pytest.raises(MacroNotFoundError, match="Macro not found"):
             service.delete("nonexistent_id")
     
-    def test_delete_with_empty_id_raises_error(self, temp_macros_file):
+    def test_delete_with_empty_id_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that deleting with empty ID raises ValueError."""
         service = MacroService(temp_macros_file)
         
         with pytest.raises(ValueError, match="Macro ID cannot be empty"):
             service.delete("")
     
-    def test_exists(self, temp_macros_file, sample_macro):
+    def test_exists(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test checking if macro exists."""
         service = MacroService(temp_macros_file)
         
@@ -121,7 +121,7 @@ class TestMacroService:
         
         assert service.exists(sample_macro.id) is True
     
-    def test_count(self, temp_macros_file):
+    def test_count(self, temp_macros_file, initialized_event_bus):
         """Test counting macros."""
         service = MacroService(temp_macros_file)
         
@@ -132,7 +132,7 @@ class TestMacroService:
         
         assert service.count() == 2
     
-    def test_clear(self, temp_macros_file, sample_macro):
+    def test_clear(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test clearing all macros."""
         service = MacroService(temp_macros_file)
         service.save(sample_macro)
@@ -141,7 +141,7 @@ class TestMacroService:
         
         assert service.count() == 0
     
-    def test_find_by_name(self, temp_macros_file, sample_macro):
+    def test_find_by_name(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test finding macro by name."""
         service = MacroService(temp_macros_file)
         service.save(sample_macro)
@@ -151,7 +151,7 @@ class TestMacroService:
         assert found is not None
         assert found.id == sample_macro.id
     
-    def test_find_by_name_case_insensitive(self, temp_macros_file, sample_macro):
+    def test_find_by_name_case_insensitive(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test finding macro by name is case insensitive."""
         service = MacroService(temp_macros_file)
         service.save(sample_macro)
@@ -160,7 +160,7 @@ class TestMacroService:
         
         assert found is not None
     
-    def test_find_by_name_not_found(self, temp_macros_file):
+    def test_find_by_name_not_found(self, temp_macros_file, initialized_event_bus):
         """Test finding macro by name returns None if not found."""
         service = MacroService(temp_macros_file)
         
@@ -168,14 +168,14 @@ class TestMacroService:
         
         assert found is None
     
-    def test_find_by_name_with_empty_raises_error(self, temp_macros_file):
+    def test_find_by_name_with_empty_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that finding with empty name raises ValueError."""
         service = MacroService(temp_macros_file)
         
         with pytest.raises(ValueError, match="Name cannot be empty"):
             service.find_by_name("")
     
-    def test_find_by_hotkey(self, temp_macros_file, sample_macro):
+    def test_find_by_hotkey(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test finding macro by hotkey."""
         service = MacroService(temp_macros_file)
         service.save(sample_macro)
@@ -185,7 +185,7 @@ class TestMacroService:
         assert found is not None
         assert found.id == sample_macro.id
     
-    def test_find_by_hotkey_case_insensitive(self, temp_macros_file, sample_macro):
+    def test_find_by_hotkey_case_insensitive(self, temp_macros_file, sample_macro, initialized_event_bus):
         """Test finding macro by hotkey is case insensitive."""
         service = MacroService(temp_macros_file)
         service.save(sample_macro)
@@ -194,7 +194,7 @@ class TestMacroService:
         
         assert found is not None
     
-    def test_find_by_hotkey_not_found(self, temp_macros_file):
+    def test_find_by_hotkey_not_found(self, temp_macros_file, initialized_event_bus):
         """Test finding macro by hotkey returns None if not found."""
         service = MacroService(temp_macros_file)
         
@@ -202,7 +202,7 @@ class TestMacroService:
         
         assert found is None
     
-    def test_find_by_hotkey_with_empty_raises_error(self, temp_macros_file):
+    def test_find_by_hotkey_with_empty_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that finding with empty hotkey raises ValueError."""
         service = MacroService(temp_macros_file)
         
@@ -213,7 +213,7 @@ class TestMacroService:
 class TestMacroServiceSingleton:
     """Tests for singleton functions."""
     
-    def test_init_macro_service(self, temp_macros_file):
+    def test_init_macro_service(self, temp_macros_file, initialized_event_bus):
         """Test initializing the singleton."""
         # Reset singleton
         import src.services.macro_service as ms_module
@@ -227,7 +227,7 @@ class TestMacroServiceSingleton:
         # Cleanup
         ms_module._macro_service = None
     
-    def test_init_twice_raises_error(self, temp_macros_file):
+    def test_init_twice_raises_error(self, temp_macros_file, initialized_event_bus):
         """Test that initializing twice raises RuntimeError."""
         # Reset singleton
         import src.services.macro_service as ms_module

@@ -305,16 +305,23 @@ class MacroEngine(QObject):
         Args:
             action: Click action to execute.
         """
-        # Apply jitter if randomization is enabled
-        x, y = action.x, action.y
-        if self._current_macro and self._current_macro.randomization_enabled:
-            x, y = self._randomization.apply_jitter(action.x, action.y)
-
-        self._logger.debug(f"Click at ({x}, {y}) with button {action.button}, modifiers {action.modifiers}")
-
         # Get AHK service
         from src.services.ahk_service import get_ahk_service
         ahk = get_ahk_service()
+
+        # Determine click position
+        if action.use_cursor_position:
+            # Get current cursor position
+            x, y = ahk.get_mouse_position()
+            self._logger.debug(f"Using cursor position: ({x}, {y})")
+        else:
+            x, y = action.x, action.y
+
+        # Apply jitter if randomization is enabled
+        if self._current_macro and self._current_macro.randomization_enabled:
+            x, y = self._randomization.apply_jitter(x, y)
+
+        self._logger.debug(f"Click at ({x}, {y}) with button {action.button}, modifiers {action.modifiers}")
 
         # Press modifiers in order
         for mod in MODIFIER_KEY_DOWN_ORDER:

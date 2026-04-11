@@ -128,17 +128,22 @@ class MacroService:
     
     def save(self, macro: Macro) -> None:
         """Save a macro.
-        
+
         Creates a new macro if it doesn't exist, updates otherwise.
-        
+
         Args:
             macro: Macro to save.
-        
+
         Raises:
             ValueError: If macro is None.
         """
         if macro is None:
             raise ValueError("Macro cannot be None")
+
+        # Get old hotkey BEFORE updating (for hotkey registration)
+        old_hotkey = None
+        if macro.id in self._macros:
+            old_hotkey = self._macros[macro.id].hotkey
 
         is_new = macro.id not in self._macros
         self._macros[macro.id] = macro
@@ -157,10 +162,6 @@ class MacroService:
         try:
             from src.services.macro_hotkey_service import get_macro_hotkey_service
             macro_hotkey_service = get_macro_hotkey_service()
-
-            # Get old macro to check if hotkey changed
-            old_macro = self._macros.get(macro.id)
-            old_hotkey = old_macro.hotkey if old_macro else None
 
             if macro.hotkey != old_hotkey:
                 # Unregister old hotkey if exists

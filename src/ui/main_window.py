@@ -180,14 +180,20 @@ class MainWindow(QMainWindow):
         # Connect macros page to editor page
         macros_page = self._pages.get("macros")
         editor_page = self._pages.get("editor")
+        settings_page = self._pages.get("settings")
+        dashboard_page = self._pages.get("dashboard")
 
         if macros_page and editor_page:
             macros_page.create_macro_requested.connect(lambda: self._navigate_to("editor"))
             macros_page.edit_macro_requested.connect(self._on_edit_macro_requested)
-            
+
             # Connect editor signals to navigate back to macros
             editor_page.save_requested.connect(lambda: self._navigate_to("macros"))
             editor_page.cancel_requested.connect(lambda: self._navigate_to("macros"))
+
+        # Connect settings saved signal to refresh dashboard hotkeys
+        if settings_page and dashboard_page:
+            settings_page.settings_saved.connect(dashboard_page._refresh_hotkeys)
 
     def _on_edit_macro_requested(self, macro_id: str) -> None:
         """Handle edit macro request.

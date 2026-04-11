@@ -517,16 +517,16 @@ class EditorPage(QWidget):
         if is_fixed:
             x = self._x_spinbox.value()
             y = self._y_spinbox.value()
+            use_cursor_position = False
         else:
-            # Cursor position - will be captured at runtime
-            x, y = 0, 0
+            # Cursor position mode
+            x, y = 0, 0  # Placeholder values (not used)
+            use_cursor_position = True
         
         # Get click settings
         button = self._button_combo.currentText().lower()
         
         # Get modifiers
-        # TODO: Modifiers will be added to ClickAction in Phase 4
-        # For now, store in instance variable for later use
         self._modifiers = self._get_selected_modifiers()
         
         # Get interval
@@ -540,13 +540,14 @@ class EditorPage(QWidget):
         # Get randomization setting
         randomization_enabled = self._randomization_checkbox.isChecked()
         
-        # Build ClickAction with modifiers
+        # Build ClickAction with use_cursor_position flag
         click_action = ClickAction(
             x=x,
             y=y,
             button=button,
-            modifiers=self._modifiers,  # Use stored modifiers
-            jitter_radius=5  # Default jitter
+            modifiers=self._modifiers,
+            jitter_radius=5,  # Default jitter
+            use_cursor_position=use_cursor_position
         )
         
         # Create actions
@@ -642,11 +643,13 @@ class EditorPage(QWidget):
         
         # Set position mode and coordinates
         if click_action:
-            # Use stored cursor mode flag instead of guessing from coordinates
-            if self._is_cursor_mode:
+            # Load use_cursor_position flag from ClickAction
+            if click_action.use_cursor_position:
                 self._cursor_radio.setChecked(True)
+                self._is_cursor_mode = True
             else:
                 self._fixed_radio.setChecked(True)
+                self._is_cursor_mode = False
                 self._x_spinbox.setValue(click_action.x)
                 self._y_spinbox.setValue(click_action.y)
             

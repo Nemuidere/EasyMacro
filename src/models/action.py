@@ -30,11 +30,12 @@ class ClickAction(EasyMacroBaseModel):
     
     Attributes:
         action_type: Always ActionType.CLICK.
-        x: X coordinate.
-        y: Y coordinate.
+        x: X coordinate (ignored if use_cursor_position is True).
+        y: Y coordinate (ignored if use_cursor_position is True).
         button: Mouse button (left, right, middle).
         modifiers: Modifier keys to hold during click.
         jitter_radius: Randomization radius in pixels.
+        use_cursor_position: If True, use current cursor position instead of x,y.
     """
     
     action_type: ActionType = Field(default=ActionType.CLICK, frozen=True)
@@ -43,6 +44,7 @@ class ClickAction(EasyMacroBaseModel):
     button: str = Field(default="left", description="Mouse button")
     modifiers: list[str] = Field(default_factory=list, description="Modifier keys to hold during click")
     jitter_radius: int = Field(default=5, ge=0, description="Randomization radius in pixels")
+    use_cursor_position: bool = Field(default=False, description="Use current cursor position")
     
     @field_validator("button")
     @classmethod
