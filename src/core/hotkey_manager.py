@@ -6,6 +6,7 @@ Handles global hotkey registration and detection using pynput.
 
 from typing import Optional, Callable, Dict
 from pynput import keyboard
+from pynput.keyboard import Key
 from PySide6.QtCore import QObject, Signal
 
 from src.core.exceptions import HotkeyError, HotkeyConflictError
@@ -48,6 +49,9 @@ class HotkeyManager(QObject):
         self._hotkey_ids: Dict[str, str] = {}  # hotkey_str -> hotkey_id
         self._listener: Optional[keyboard.Listener] = None
         self._running = False
+        
+        # Track currently pressed modifier keys
+        self._pressed_modifiers: set = set()  # Set of currently pressed modifier names
     
     def register(
         self,
@@ -121,7 +125,10 @@ class HotkeyManager(QObject):
         if self._running:
             raise RuntimeError("Hotkey manager is already running")
         
-        self._listener = keyboard.Listener(on_press=self._on_key_press)
+        self._listener = keyboard.Listener(
+            on_press=self._on_key_press,
+            on_release=self._on_key_release
+        )
         self._listener.start()
         self._running = True
         
@@ -136,6 +143,7 @@ class HotkeyManager(QObject):
             self._listener.stop()
             self._listener = None
         
+        self._pressed_modifiers.clear()
         self._running = False
         self._logger.info("Hotkey manager stopped")
     
@@ -212,7 +220,13 @@ class HotkeyManager(QObject):
         Args:
             key: Key that was pressed.
         """
-        # Build hotkey string from current state
+        # Track modifier keys
+        key_name = self._get_key_name(key)
+        if key_name in ("ctrl", "alt", "shift", "meta"):
+            self._pressed_modifiers.add(key_name)
+            return  # Don't trigger hotkey on modifier press alone
+        
+        # Build hotkey string from current modifiers + key
         current_hotkey = self._build_hotkey_string(key)
         
         if current_hotkey and current_hotkey in self._hotkeys:
@@ -224,6 +238,42 @@ class HotkeyManager(QObject):
             if hotkey_id:
                 self.hotkey_pressed.emit(hotkey_id)
     
+    def _on_key_release(self, key) -> None:
+        """Handle key release events.
+        
+        Args:
+            key: Key that was released.
+        """
+        key_name = self._get_key_name(key)
+        if key_name in ("ctrl", "alt", "shift", "meta"):
+            self._pressed_modifiers.discard(key_name)
+    
+    def _get_key_name(self, key) -> Optional[str]:
+        """Extract key name from pynput key object.
+        
+        Args:
+            key: pynput keyboard key object.
+        
+        Returns:
+            Key name string or None if cannot be determined.
+        """
+        if isinstance(key, Key):
+            name = key.name.lower()
+            # Normalize modifier names
+            if name in ("cmd", "win", "command"):
+                return "meta"
+            return name
+        
+        try:
+            # Handle character keys
+            char = key.char
+            if char:
+                return char.lower()
+        except AttributeError:
+            pass
+        
+        return None
+    
     def _build_hotkey_string(self, key) -> Optional[str]:
         """Build a hotkey string from the current keyboard state.
         
@@ -233,26 +283,19 @@ class HotkeyManager(QObject):
         Returns:
             Hotkey string or None if not a valid hotkey.
         """
-        # This is a simplified implementation
-        # A full implementation would track modifier state
-        # and handle key combinations properly
+        key_name = self._get_key_name(key)
+        if not key_name:
+            return None
         
-        try:
-            # Get modifier state
-            modifiers = []
-            
-            # Check for modifiers (simplified - would need proper state tracking)
-            # For now, we'll just return the key name
-            if hasattr(key, 'char') and key.char:
-                return key.char.lower()
-            elif hasattr(key, 'name'):
-                return key.name.lower()
-            
+        # Don't include modifiers as the main key
+        if key_name in ("ctrl", "alt", "shift", "meta"):
             return None
-            
-        except Exception as e:
-            self._logger.error(f"Error building hotkey string: {e}")
-            return None
+        
+        # Build hotkey string with modifiers
+        modifiers = sorted(self._pressed_modifiers)  # Sort for consistent order
+        if modifiers:
+            return "+".join(modifiers + [key_name])
+        return key_name
 
 
 # Global singleton instance

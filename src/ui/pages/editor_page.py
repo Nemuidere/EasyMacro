@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QMessageBox,
     QFrame,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
@@ -84,26 +85,46 @@ class EditorPage(QWidget):
     def _setup_ui(self) -> None:
         """Set up the user interface."""
         # Main layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(20)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # Page title
+        # Page title (outside scroll area)
+        title_container = QWidget()
+        title_layout = QVBoxLayout(title_container)
+        title_layout.setContentsMargins(30, 30, 30, 10)
+        
         self._title_label = QLabel("Create Macro" if not self._is_editing else "Edit Macro")
         self._title_label.setObjectName("pageTitle")
         self._title_label.setFont(QFont("Segoe UI", 28, QFont.Bold))
-        layout.addWidget(self._title_label)
+        title_layout.addWidget(self._title_label)
+        
+        main_layout.addWidget(title_container)
+        
+        # Scroll area for form content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+        
+        # Scroll content widget
+        scroll_content = QWidget()
+        layout = QVBoxLayout(scroll_content)
+        layout.setContentsMargins(30, 10, 30, 30)
+        layout.setSpacing(20)
         
         # Macro name field
         name_layout = QHBoxLayout()
         name_label = QLabel("Macro Name:")
         name_label.setFont(QFont("Segoe UI", 12))
+        name_label.setMinimumWidth(100)
         name_layout.addWidget(name_label)
         
         self._name_input = QLineEdit()
         self._name_input.setPlaceholderText("Enter macro name...")
         self._name_input.setFont(QFont("Segoe UI", 12))
-        name_layout.addWidget(self._name_input)
+        self._name_input.setMinimumWidth(200)
+        name_layout.addWidget(self._name_input, 1)
         
         layout.addLayout(name_layout)
         
@@ -151,11 +172,13 @@ class EditorPage(QWidget):
         self._x_spinbox = QSpinBox()
         self._x_spinbox.setRange(0, 9999)
         self._x_spinbox.setEnabled(False)
+        self._x_spinbox.setMinimumWidth(80)
         
         y_label = QLabel("Y:")
         self._y_spinbox = QSpinBox()
         self._y_spinbox.setRange(0, 9999)
         self._y_spinbox.setEnabled(False)
+        self._y_spinbox.setMinimumWidth(80)
         
         self._capture_button = QPushButton("Capture")
         self._capture_button.setToolTip("Click to capture mouse position (Press F2 to capture, Esc to cancel)")
@@ -190,10 +213,12 @@ class EditorPage(QWidget):
         self._seconds_spinbox.setRange(0, 3600)
         self._seconds_spinbox.setValue(1)
         self._seconds_spinbox.setSuffix(" seconds")
+        self._seconds_spinbox.setMinimumWidth(120)
 
         self._ms_spinbox = QSpinBox()
         self._ms_spinbox.setRange(0, 999)
         self._ms_spinbox.setSuffix(" ms")
+        self._ms_spinbox.setMinimumWidth(100)
 
         interval_layout.addWidget(self._seconds_spinbox)
         interval_layout.addWidget(self._ms_spinbox)
@@ -205,6 +230,7 @@ class EditorPage(QWidget):
         self._button_combo = QComboBox()
         self._button_combo.addItems(["Left", "Right", "Middle"])
         self._button_combo.setCurrentText("Left")
+        self._button_combo.setMinimumWidth(100)
         click_layout.addRow("Mouse Button:", self._button_combo)
 
         click_group.setLayout(click_layout)
@@ -237,11 +263,16 @@ class EditorPage(QWidget):
         random_layout.addStretch()
         layout.addLayout(random_layout)
 
-        # Spacer to push buttons to bottom
+        # Add stretch at the bottom to push content up
         layout.addStretch()
-
-        # Action buttons
-        button_layout = QHBoxLayout()
+        
+        scroll_area.setWidget(scroll_content)
+        main_layout.addWidget(scroll_area, 1)
+        
+        # Action buttons (outside scroll area, at bottom)
+        button_container = QWidget()
+        button_layout = QHBoxLayout(button_container)
+        button_layout.setContentsMargins(30, 15, 30, 30)
         button_layout.setSpacing(15)
 
         self._cancel_button = QPushButton("Cancel")
@@ -255,7 +286,7 @@ class EditorPage(QWidget):
         self._save_button.setDefault(True)
         button_layout.addWidget(self._save_button)
 
-        layout.addLayout(button_layout)
+        main_layout.addWidget(button_container)
 
     def _check_hotkey_conflict(self, hotkey: str) -> bool:
         """Check if hotkey conflicts with existing macros.

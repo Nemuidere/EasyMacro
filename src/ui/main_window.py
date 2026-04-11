@@ -123,7 +123,6 @@ class MainWindow(QMainWindow):
         nav_items = [
             ("dashboard", "Dashboard"),
             ("macros", "Macros"),
-            ("editor", "Editor"),
             ("settings", "Settings"),
         ]
         
@@ -185,6 +184,10 @@ class MainWindow(QMainWindow):
         if macros_page and editor_page:
             macros_page.create_macro_requested.connect(lambda: self._navigate_to("editor"))
             macros_page.edit_macro_requested.connect(self._on_edit_macro_requested)
+            
+            # Connect editor signals to navigate back to macros
+            editor_page.save_requested.connect(lambda: self._navigate_to("macros"))
+            editor_page.cancel_requested.connect(lambda: self._navigate_to("macros"))
 
     def _on_edit_macro_requested(self, macro_id: str) -> None:
         """Handle edit macro request.
@@ -211,9 +214,10 @@ class MainWindow(QMainWindow):
         if page_id not in self._pages:
             raise ValueError(f"Page not found: {page_id}")
         
-        # Update button states
-        for pid, button in self._nav_buttons.items():
-            button.setChecked(pid == page_id)
+        # Update button states (skip for editor since it has no button)
+        if page_id != "editor":
+            for pid, button in self._nav_buttons.items():
+                button.setChecked(pid == page_id)
         
         # Switch page
         page = self._pages[page_id]

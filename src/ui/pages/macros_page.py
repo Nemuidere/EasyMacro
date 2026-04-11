@@ -105,23 +105,29 @@ class MacrosPage(QWidget):
     def _load_macros(self) -> None:
         """Load macros from service."""
         self._macro_list.clear()
-        
+
         try:
             service = get_macro_service()
             macros = service.get_all()
-            
+
             for macro in macros:
-                item = QListWidgetItem(macro.name)
+                # Format: [hotkey] Macro Name or just Macro Name
+                if macro.hotkey:
+                    display_text = f"[{macro.hotkey}] {macro.name}"
+                else:
+                    display_text = macro.name
+
+                item = QListWidgetItem(display_text)
                 item.setData(Qt.UserRole, macro.id)
-                
+
                 # Add status indicator
                 if macro.enabled:
-                    item.setToolTip(f"{macro.name} (Enabled)")
+                    item.setToolTip(f"{macro.name} (Enabled) - Hotkey: {macro.hotkey or 'None'}")
                 else:
-                    item.setToolTip(f"{macro.name} (Disabled)")
-                
+                    item.setToolTip(f"{macro.name} (Disabled) - Hotkey: {macro.hotkey or 'None'}")
+
                 self._macro_list.addItem(item)
-                
+
         except Exception as e:
             # Show error in UI
             pass

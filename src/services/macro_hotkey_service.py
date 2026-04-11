@@ -162,18 +162,46 @@ class MacroHotkeyService(QObject):
     
     def _on_macro_hotkey_pressed(self, macro_id: str) -> None:
         """Handle macro hotkey press.
-        
+
         Args:
             macro_id: ID of macro to execute.
         """
         self._logger.info(f"Macro hotkey pressed: {macro_id}")
-        
-        # Emit signal for UI to handle
-        self.macro_triggered.emit(macro_id)
-        
-        # Also emit via EventBus
-        if self._event_bus:
-            self._event_bus.macro_started.emit(macro_id)
+
+        # Get the macro
+        if not self._macro_service:
+            self._logger.error("MacroService not initialized")
+            return
+
+        try:
+            macro = self._macro_service.get(macro_id)
+            if not macro:
+                self._logger.error(f"Macro not found: {macro_id}")
+                return
+
+            if not macro.enabled:
+                self._logger.warning(f"Macro {macro.name} is disabled, skipping execution")
+                return
+
+            # Execute the macro via MacroEngine
+            from src.core.macro_engine import get_macro_engine
+            try:
+                engine = get_macro_engine()
+                engine.run_macro(macro)
+                self._logger.info(f"Started macro: {macro.name}")
+            except RuntimeError as e:
+                self._logger.error(f"Failed to get MacroEngine: {e}")
+                return
+
+            # Emit signal for UI to handle
+            self.macro_triggered.emit(macro_id)
+
+            # Also emit via EventBus
+            if self._event_bus:
+                self._event_bus.macro_started.emit(macro_id)
+
+        except Exception as e:
+            self._logger.error(f"Failed to execute macro {macro_id}: {e}")
 
 
 # Global singleton
