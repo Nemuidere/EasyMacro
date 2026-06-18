@@ -22,6 +22,7 @@ from src.core.state import get_state_manager
 from src.core.event_bus import get_event_bus
 from src.core.config import ConfigManager
 from src.core.constants import DEFAULT_CONFIG_PATH
+from src.core.exceptions import MacroNotFoundError
 from src.core.logger import get_logger
 from src.services.macro_service import get_macro_service
 from src.services.stats_service import get_stats_service
@@ -315,9 +316,9 @@ class DashboardPage(QWidget):
                 return
             
             macro_service = get_macro_service()
-            macro = macro_service.get_by_id(macro_id)
-            
-            if not macro:
+            try:
+                macro = macro_service.get(macro_id)
+            except MacroNotFoundError:
                 self._logger.warning(f"Macro with ID '{macro_id}' not found")
                 self._status_label.setText("No macro running")
                 self._status_label.setProperty("class", "")

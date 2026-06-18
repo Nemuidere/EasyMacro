@@ -140,11 +140,6 @@ class MacroService:
         if macro is None:
             raise ValueError("Macro cannot be None")
 
-        # Get old hotkey BEFORE updating (for hotkey registration)
-        old_hotkey = None
-        if macro.id in self._macros:
-            old_hotkey = self._macros[macro.id].hotkey
-
         is_new = macro.id not in self._macros
         self._macros[macro.id] = macro
         self._save_all()
@@ -158,24 +153,16 @@ class MacroService:
         if self._event_bus is not None:
             self._event_bus.macro_saved.emit(macro)
 
-        # Register/unregister hotkey if changed
+        # Re-sync this macro's hotkey registration. Unregister any existing
+        # binding, then register the current one if the macro is enabled and
+        # has a hotkey. This is idempotent and covers add/remove/change.
         try:
             from src.services.macro_hotkey_service import get_macro_hotkey_service
             macro_hotkey_service = get_macro_hotkey_service()
 
-            if macro.hotkey != old_hotkey:
-                # Unregister old hotkey if exists
-                if old_hotkey:
-                    macro_hotkey_service.unregister_macro_hotkey(macro.id)
-
-                # Register new hotkey if exists
-                if macro.hotkey and macro.enabled:
-                    from typing import Callable
-                    def make_callback(m: Macro) -> Callable[[], None]:
-                        def callback():
-                            macro_hotkey_service._on_macro_hotkey_pressed(m.id)
-                        return callback
-                    macro_hotkey_service.register_macro_hotkey(macro, make_callback(macro))
+            macro_hotkey_service.unregister_macro_hotkey(macro.id)
+            if macro.hotkey and macro.enabled:
+                macro_hotkey_service.register_macro(macro)
         except RuntimeError:
             pass  # MacroHotkeyService not initialized
     

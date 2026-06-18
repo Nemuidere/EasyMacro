@@ -164,36 +164,40 @@ class PositionCaptureService(QObject):
         self._logger.info(f"Started position capture with key '{capture_key}', timeout {timeout_ms}ms")
         return True
     
-    def start_capture_delayed(self, capture_key: str = "f2", timeout_ms: int = 30000, delay_ms: int = 200) -> None:
+    def start_capture_delayed(self, capture_key: str = "f2", timeout_ms: int = 30000, delay_ms: int = 200) -> bool:
         """Start capture after delay to allow window state changes.
-        
+
         Args:
             capture_key: Key to listen for (default: "f2").
             timeout_ms: Timeout in milliseconds (default: 30000 = 30 seconds).
             delay_ms: Delay before starting listener (default: 200ms).
+
+        Returns:
+            True if capture was scheduled, False if already capturing.
         """
+        # Early exit: check if already capturing (before mutating any state).
+        if self._is_capturing():
+            self._logger.warning("Capture already in progress, ignoring start request")
+            return False
+
         # Store parameters
         self._capture_key = capture_key.lower()
         self._timeout_ms = timeout_ms
-        
-        # Early exit: check if already capturing
-        if self._is_capturing():
-            self._logger.warning("Capture already in progress, ignoring start request")
-            return
-        
+
         # Transition to capturing state immediately
         self._set_state(CaptureState.CAPTURING)
-        
+
         # Start timeout timer
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_timeout_triggered)
         self._timeout_timer.start(timeout_ms)
-        
+
         # Delay keyboard listener start
         QTimer.singleShot(delay_ms, self._start_keyboard_listener)
-        
+
         self._logger.info(f"Delayed capture scheduled with key '{capture_key}', timeout {timeout_ms}ms, delay {delay_ms}ms")
+        return True
     
     def _start_keyboard_listener(self) -> None:
         """Start the keyboard listener (called after delay)."""

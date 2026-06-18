@@ -199,12 +199,30 @@ class MouseMovementService(QObject):
     
     def get_initial_position(self) -> Optional[Tuple[int, int]]:
         """Get initial mouse position when monitoring started.
-        
+
         Returns:
             Tuple of (x, y) coordinates, or None if not monitoring.
         """
         with self._position_lock:
             return self._initial_position
+
+    def update_reference_position(self, x: int, y: int) -> None:
+        """Reset the monitored reference position to (x, y).
+
+        Used by the macro engine when it moves the cursor itself: rebasing the
+        reference point means the macro's own movement reads as zero distance,
+        while a subsequent genuine user movement away from (x, y) still trips
+        the threshold. No-op when not monitoring.
+
+        Args:
+            x: New reference X coordinate.
+            y: New reference Y coordinate.
+        """
+        with self._position_lock:
+            if self._initial_position is None:
+                return
+            self._initial_position = (x, y)
+            self._current_position = (x, y)
     
     def _on_mouse_move(self, x: int, y: int) -> None:
         """Handle mouse move event from pynput listener (background thread).

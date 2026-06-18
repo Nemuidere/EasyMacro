@@ -111,10 +111,14 @@ class MacroEngine(QObject):
                 self._on_mouse_movement_exceeded
             )
         
-        # Timer for delays
+        # Single timer that drives execution. Every action is scheduled through
+        # this timer so control always returns to the Qt event loop between
+        # actions. This keeps the UI responsive, lets stop/pause hotkeys be
+        # processed mid-run, and avoids unbounded recursion on long/looping
+        # macros.
         self._delay_timer = QTimer(self)
         self._delay_timer.setSingleShot(True)
-        self._delay_timer.timeout.connect(self._on_delay_complete)
+        self._delay_timer.timeout.connect(self._step)
     
     def run_macro(self, macro: Macro) -> None:
         """Start executing a macro.
@@ -161,9 +165,9 @@ class MacroEngine(QObject):
         # Emit signals
         self.macro_started.emit(macro.id)
         self._event_bus.macro_started.emit(macro.id)
-        
-        # Start execution
-        self._execute_next_action()
+
+        # Start execution on the next event-loop tick.
+        self._schedule_step(0)
     
     def pause_macro(self) -> None:
         """Pause the currently running macro.
@@ -193,7 +197,7 @@ class MacroEngine(QObject):
         
         self._execution_state = ExecutionState.RUNNING
         self._state.set(AppState.RUNNING)
-        self._execute_next_action()
+        self._schedule_step(0)
     
     def stop_macro(self) -> None:
         """Stop the currently running macro.
@@ -244,58 +248,76 @@ class MacroEngine(QObject):
         """
         return self._current_macro
     
-    def _execute_next_action(self) -> None:
-        """Execute the next action in the macro."""
+    def _step(self) -> None:
+        """Advance macro execution by one action.
+
+        This is the single entry point driven by the delay timer. It selects
+        the next action (handling end-of-sequence repeat logic) and executes
+        it, then schedules the following step. Because every step is triggered
+        from the event loop, execution never recurses and never blocks the UI.
+        """
         if self._execution_state != ExecutionState.RUNNING:
             return
-        
+
         if self._current_macro is None:
-            self._complete_macro()
             return
-        
-        # Check if we've completed all actions
-        if self._current_action_index >= len(self._current_macro.actions):
-            # Check if we need to repeat
+
+        actions = self._current_macro.actions
+
+        # Reached the end of the action sequence: decide whether to repeat.
+        if self._current_action_index >= len(actions):
+            # repeat_count == 0 means repeat forever.
             if self._repeat_count == 0 or self._current_repeat < self._repeat_count - 1:
                 self._current_repeat += 1
                 self._current_action_index = 0
-                # Apply repeat delay if configured
-                if self._current_macro.repeat_delay_ms > 0:
-                    self._schedule_delay(self._current_macro.repeat_delay_ms)
-                    return
+                self._schedule_step(self._current_macro.repeat_delay_ms)
             else:
                 self._complete_macro()
-                return
-        
-        action = self._current_macro.actions[self._current_action_index]
-        self._execute_action(action)
-    
-    def _execute_action(self, action: Action) -> None:
-        """Execute a single action.
-        
+            return
+
+        action = actions[self._current_action_index]
+        self._execute_one(action)
+
+    def _execute_one(self, action: Action) -> None:
+        """Execute a single action and schedule the next step.
+
+        Instantaneous actions (click/key/move) run synchronously and schedule
+        the next step immediately. Delay actions schedule the next step after
+        the (optionally randomized) duration without blocking the thread.
+
         Args:
             action: Action to execute.
         """
         self._logger.debug(f"Executing action: {action.action_type}")
-        
+
         self.action_started.emit(action.id, action.action_type.value)
-        
+
         try:
+            if isinstance(action, DelayAction):
+                delay_ms = action.duration_ms
+                if self._current_macro.randomization_enabled:
+                    delay_ms = self._randomization.randomize_delay(action.duration_ms)
+
+                self._logger.debug(f"Delay for {delay_ms:.0f}ms")
+
+                self._current_action_index += 1
+                self.action_completed.emit(action.id)
+                self._schedule_step(delay_ms)
+                return
+
             if isinstance(action, ClickAction):
                 self._execute_click(action)
-            elif isinstance(action, DelayAction):
-                self._execute_delay(action)
             elif isinstance(action, KeyPressAction):
                 self._execute_key_press(action)
             elif isinstance(action, MouseMoveAction):
                 self._execute_mouse_move(action)
             else:
                 raise MacroExecutionError(f"Unknown action type: {action.action_type}")
-            
-            self.action_completed.emit(action.id)
+
             self._current_action_index += 1
-            self._execute_next_action()
-            
+            self.action_completed.emit(action.id)
+            self._schedule_step(0)
+
         except Exception as e:
             self._handle_error(str(e))
     
@@ -323,6 +345,11 @@ class MacroEngine(QObject):
 
         self._logger.debug(f"Click at ({x}, {y}) with button {action.button}, modifiers {action.modifiers}")
 
+        # Re-baseline mouse-movement monitoring to where we're about to move the
+        # cursor, so the macro's own click doesn't count as "user moved the
+        # mouse" and immediately stop the run.
+        self._update_movement_baseline(x, y)
+
         # Press modifiers in order
         for mod in MODIFIER_KEY_DOWN_ORDER:
             if mod in action.modifiers:
@@ -346,26 +373,7 @@ class MacroEngine(QObject):
         # Track clicks in stats
         if self._current_macro:
             self._stats.update_clicks(self._current_macro.id, click_count)
-    
-    def _execute_delay(self, action: DelayAction) -> None:
-        """Execute a delay action.
 
-        Args:
-            action: Delay action to execute.
-        """
-        # Apply randomization if enabled
-        delay_ms = action.duration_ms
-        if self._current_macro.randomization_enabled:
-            delay_ms = self._randomization.randomize_delay(action.duration_ms)
-
-        self._logger.debug(f"Delay for {delay_ms:.0f}ms")
-
-        # Get AHK service
-        from src.services.ahk_service import get_ahk_service
-        ahk = get_ahk_service()
-
-        ahk.sleep(int(delay_ms))
-    
     def _execute_key_press(self, action: KeyPressAction) -> None:
         """Execute a key press action.
 
@@ -397,25 +405,37 @@ class MacroEngine(QObject):
 
         self._logger.debug(f"Mouse move to ({x}, {y}) with speed {speed}")
 
+        # Re-baseline movement monitoring to the destination (see _execute_click).
+        self._update_movement_baseline(x, y)
+
         # Get AHK service
         from src.services.ahk_service import get_ahk_service
         ahk = get_ahk_service()
 
         ahk.mouse_move(x, y, speed=speed, smooth=action.smooth)
-    
-    def _schedule_delay(self, delay_ms: float) -> None:
-        """Schedule a delay.
-        
+
+    def _update_movement_baseline(self, x: int, y: int) -> None:
+        """Reset the mouse-movement monitor's reference point.
+
+        Called right before the engine moves the cursor itself, so the monitor
+        measures user movement relative to where the macro put the cursor rather
+        than where it started.
+
         Args:
-            delay_ms: Delay in milliseconds.
+            x: Target X coordinate the cursor is being moved to.
+            y: Target Y coordinate the cursor is being moved to.
         """
-        self._delay_timer.start(int(delay_ms))
-    
-    def _on_delay_complete(self) -> None:
-        """Called when a delay completes."""
-        self._current_action_index += 1
-        self._execute_next_action()
-    
+        if self._mouse_movement_service and self._mouse_movement_service.is_monitoring():
+            self._mouse_movement_service.update_reference_position(x, y)
+
+    def _schedule_step(self, delay_ms: float) -> None:
+        """Schedule the next execution step after a delay.
+
+        Args:
+            delay_ms: Delay in milliseconds before the next step (0 = ASAP).
+        """
+        self._delay_timer.start(int(max(0, delay_ms)))
+
     def _complete_macro(self) -> None:
         """Complete the current macro."""
         if self._current_macro is None:
@@ -452,13 +472,19 @@ class MacroEngine(QObject):
             return
         
         self._logger.error(f"Macro error: {error_message}")
-        
+
         macro_id = self._current_macro.id
-        
+
+        # Stop the step timer and mouse monitoring so nothing keeps running
+        # after the failure.
+        self._delay_timer.stop()
+        if self._mouse_movement_service and self._mouse_movement_service.is_monitoring():
+            self._mouse_movement_service.stop_monitoring()
+
         self._execution_state = ExecutionState.IDLE
         self._state.set_error(error_message)
         self._state.set_current_macro(None)
-        
+
         self.macro_error.emit(macro_id, error_message)
         self._event_bus.macro_error.emit(macro_id, error_message)
 

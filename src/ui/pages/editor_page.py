@@ -550,12 +550,14 @@ class EditorPage(QWidget):
             use_cursor_position=use_cursor_position
         )
         
-        # Create actions
+        # Create actions: click, then wait the configured interval. With
+        # repeat_count == 0 the engine loops this sequence (click -> wait ->
+        # click -> ...) until the user stops it via hotkey or mouse movement.
         actions = [
             click_action,
             DelayAction(duration_ms=total_ms),
         ]
-        
+
         # Create or update macro
         if self._is_editing and self._existing_macro:
             # Update existing macro
@@ -563,6 +565,7 @@ class EditorPage(QWidget):
             macro.name = name
             macro.actions = actions
             macro.randomization_enabled = randomization_enabled
+            macro.repeat_count = 0  # loop until stopped
             macro.touch()
         else:
             # Create new macro
@@ -570,6 +573,7 @@ class EditorPage(QWidget):
                 name=name,
                 actions=actions,
                 randomization_enabled=randomization_enabled,
+                repeat_count=0,  # loop until stopped
             )
         
         # Get hotkey

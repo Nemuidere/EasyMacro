@@ -151,7 +151,13 @@ class Application(QObject):
         state_manager = get_state_manager()
         stats_service = get_stats_service()
         mouse_movement_service = get_mouse_movement_service()
-        init_macro_engine(randomization_engine, state_manager, stats_service, mouse_movement_service)
+        macro_engine = init_macro_engine(
+            randomization_engine, state_manager, stats_service, mouse_movement_service
+        )
+
+        # Apply mouse-movement safety settings to the engine.
+        macro_engine.set_stop_on_mouse_movement(self._settings.stop_on_mouse_movement)
+        macro_engine.set_mouse_movement_threshold(self._settings.mouse_movement_threshold)
 
         # Initialize macro hotkey service
         init_macro_hotkey_service()
@@ -170,6 +176,9 @@ class Application(QObject):
 
         # Register all existing macro hotkeys
         macro_hotkey_service.register_all_macros()
+
+        # Register the global stop/pause/resume hotkeys (wired to the engine).
+        macro_hotkey_service.register_global_hotkeys(self._settings.hotkeys)
 
         self._logger.info("All services initialized")
     

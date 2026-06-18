@@ -36,6 +36,7 @@ wheels/
 AGENTS.md
 data/*.json
 !data/.gitkeep
+CLAUDE.md
 
 # Build
 *.spec
