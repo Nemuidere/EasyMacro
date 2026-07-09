@@ -18,7 +18,7 @@ from src.core.state import StateManager, AppState
 from src.models.settings import RandomizationSettings
 from src.models.macro import Macro
 from src.models.action import ClickAction, DelayAction, KeyPressAction, MouseMoveAction
-from src.models.action import ActionType
+from src.models.action import ActionType, LoopBlock
 
 
 @pytest.fixture
@@ -283,6 +283,26 @@ def test_stop_releases_held_key(make_engine):
     assert engine._held_keys == set()
 
 
+def test_key_hold_with_modifiers_presses_all(make_engine):
+    engine, ahk, state = make_engine()
+    macro = _macro(
+        [
+            KeyPressAction(key="a", modifiers=["ctrl"], action_type=ActionType.KEY_HOLD),
+            KeyPressAction(key="a", modifiers=["ctrl"], action_type=ActionType.KEY_RELEASE),
+        ],
+        repeat_count=1,
+    )
+
+    engine.run_macro(macro)
+    QTest.qWait(80)
+
+    downs = [c.args[0] for c in ahk.key_down.call_args_list]
+    ups = [c.args[0] for c in ahk.key_up.call_args_list]
+    assert downs == ["ctrl", "a"]      # modifier before key
+    assert ups == ["a", "ctrl"]        # key before modifier
+    assert engine._held_keys == set()
+
+
 def test_key_press_sends_press_not_down(make_engine):
     engine, ahk, state = make_engine()
     macro = _macro(
@@ -316,6 +336,50 @@ def test_stats_updated_with_click_count(make_engine):
         stats.update_clicks.assert_called_with(macro.id, 1)
     finally:
         ahk_module.get_ahk_service = orig
+
+
+def test_loop_block_repeats_its_actions(make_engine):
+    engine, ahk, state = make_engine()
+    macro = Macro(
+        name="Loop",
+        actions=[LoopBlock(count=3, actions=[ClickAction(x=1, y=1)])],
+        repeat_count=1,
+        randomization_enabled=False,
+    )
+    engine.run_macro(macro)
+    QTest.qWait(120)
+    assert ahk.click.call_count == 3
+
+
+def test_mixed_loop_and_plain_actions(make_engine):
+    engine, ahk, state = make_engine()
+    macro = Macro(
+        name="Mixed",
+        actions=[
+            ClickAction(x=1, y=1),
+            LoopBlock(count=2, actions=[ClickAction(x=2, y=2)]),
+            ClickAction(x=3, y=3),
+        ],
+        repeat_count=1,
+        randomization_enabled=False,
+    )
+    engine.run_macro(macro)
+    QTest.qWait(150)
+    # 1 + (2) + 1 = 4 clicks per pass.
+    assert ahk.click.call_count == 4
+
+
+def test_outer_repeat_wraps_loop_blocks(make_engine):
+    engine, ahk, state = make_engine()
+    macro = Macro(
+        name="Outer",
+        actions=[LoopBlock(count=2, actions=[ClickAction(x=1, y=1)])],
+        repeat_count=2,  # whole macro runs twice
+        randomization_enabled=False,
+    )
+    engine.run_macro(macro)
+    QTest.qWait(150)
+    assert ahk.click.call_count == 4  # 2 (loop) * 2 (outer)
 
 
 def test_jitter_keeps_click_near_target(qapp, initialized_event_bus, monkeypatch):

@@ -157,8 +157,49 @@ class MouseMoveAction(EasyMacroBaseModel):
     speed: int = Field(default=5, ge=1, le=10, description="Movement speed (1-10)")
 
 
-# Union type for all actions
+# Union type for all executable (leaf) actions
 Action = ClickAction | DelayAction | KeyPressAction | MouseMoveAction
+
+
+class LoopBlock(EasyMacroBaseModel):
+    """A group of actions repeated a fixed number of times (a loop).
+
+    Used to loop *parts* of a macro: e.g. repeat steps 1-6 ten times, then run
+    the rest. Loop blocks sit alongside plain actions in a macro's item list and
+    are expanded into a flat action sequence at run time. The whole macro is
+    still wrapped by the macro-level ``repeat_count`` (the outer loop).
+
+    Attributes:
+        count: Number of times to repeat the block (>= 1).
+        actions: The actions performed on each pass.
+    """
+
+    count: int = Field(default=1, ge=1, description="Times to repeat this block")
+    actions: list[Action] = Field(default_factory=list, description="Actions in the loop")
+
+
+# An item in a macro body is either a leaf action or a loop block.
+MacroItem = ClickAction | DelayAction | KeyPressAction | MouseMoveAction | LoopBlock
+
+
+def flatten_items(items: list) -> list:
+    """Expand loop blocks into a flat list of executable actions.
+
+    Args:
+        items: A list of Actions and/or LoopBlocks.
+
+    Returns:
+        A flat list of Actions with every LoopBlock unrolled ``count`` times.
+    """
+    flat: list = []
+    for item in items:
+        if isinstance(item, LoopBlock):
+            inner = flatten_items(item.actions)
+            for _ in range(item.count):
+                flat.extend(inner)
+        else:
+            flat.append(item)
+    return flat
 
 
 def parse_action(data: dict) -> Action:

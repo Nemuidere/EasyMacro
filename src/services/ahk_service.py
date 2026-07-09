@@ -36,6 +36,17 @@ class AHKService:
         """Initialize AHK service."""
         self._logger = get_logger("ahk_service")
         self._ahk = AHK()
+
+        # Force absolute (whole-screen) mouse coordinates. Without this, AHK can
+        # interpret click/move coordinates relative to the active window, so a
+        # macro would click in the wrong place depending on which window is
+        # focused. Captured positions are screen-absolute, so the engine must be
+        # too. This persists in the AHK process for all later calls.
+        try:
+            self._ahk.set_coord_mode("Mouse", "Screen")
+        except Exception as e:  # pragma: no cover - defensive
+            self._logger.warning(f"Could not set AHK mouse coord mode to Screen: {e}")
+
         self._logger.info("AHK service initialized successfully")
     
     def click(

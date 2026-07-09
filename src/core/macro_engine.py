@@ -10,7 +10,7 @@ from time import time
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from src.models.macro import Macro, MacroStatus
-from src.models.action import Action, ActionType, ClickAction, DelayAction, KeyPressAction, MouseMoveAction
+from src.models.action import Action, ActionType, ClickAction, DelayAction, KeyPressAction, MouseMoveAction, flatten_items
 from src.models.settings import RandomizationSettings
 from src.core.randomization import RandomizationEngine
 from src.core.state import StateManager, AppState
@@ -95,6 +95,9 @@ class MacroEngine(QObject):
         self._event_bus = get_event_bus()
         
         self._current_macro: Optional[Macro] = None
+        # The macro body flattened for execution: loop blocks are unrolled into
+        # a plain action sequence so the step machine stays simple.
+        self._flat_actions: list = []
         self._current_action_index: int = 0
         self._execution_state: ExecutionState = ExecutionState.IDLE
         self._repeat_count: int = 0
@@ -148,6 +151,9 @@ class MacroEngine(QObject):
         self._logger.info(f"Starting macro: {macro.name}")
         
         self._current_macro = macro
+        self._flat_actions = flatten_items(macro.actions)
+        if not self._flat_actions:
+            raise ValueError(f"Macro '{macro.name}' has no runnable actions")
         self._current_action_index = 0
         self._current_repeat = 0
         self._repeat_count = macro.repeat_count
@@ -268,7 +274,7 @@ class MacroEngine(QObject):
         if self._current_macro is None:
             return
 
-        actions = self._current_macro.actions
+        actions = self._flat_actions
 
         # Reached the end of the action sequence: decide whether to repeat.
         if self._current_action_index >= len(actions):
@@ -401,13 +407,21 @@ class MacroEngine(QObject):
         ahk = get_ahk_service()
 
         if action.action_type == ActionType.KEY_HOLD:
-            self._logger.debug(f"Key down (hold): {action.key}")
+            self._logger.debug(f"Key down (hold): {action.key} + {action.modifiers}")
+            # Press modifiers first, then the key; track everything held.
+            for mod in action.modifiers:
+                ahk.key_down(mod)
+                self._held_keys.add(mod)
             ahk.key_down(action.key)
             self._held_keys.add(action.key)
         elif action.action_type == ActionType.KEY_RELEASE:
-            self._logger.debug(f"Key up (release): {action.key}")
+            self._logger.debug(f"Key up (release): {action.key} + {action.modifiers}")
+            # Release the key, then modifiers in reverse order.
             ahk.key_up(action.key)
             self._held_keys.discard(action.key)
+            for mod in reversed(action.modifiers):
+                ahk.key_up(mod)
+                self._held_keys.discard(mod)
         else:
             self._logger.debug(f"Key press: {action.key} with modifiers {action.modifiers}")
             ahk.key_press(action.key, action.modifiers)

@@ -9,7 +9,7 @@ from typing import Optional
 from pydantic import Field, field_validator
 
 from src.models.base import EasyMacroBaseModel
-from src.models.action import Action
+from src.models.action import Action, MacroItem
 
 
 class MacroStatus(str, Enum):
@@ -42,7 +42,9 @@ class Macro(EasyMacroBaseModel):
     
     name: str = Field(max_length=100, description="Macro name")
     description: str = Field(default="", max_length=500, description="Macro description")
-    actions: list[Action] = Field(default_factory=list, description="List of actions")
+    actions: list[MacroItem] = Field(
+        default_factory=list, description="Ordered actions and/or loop blocks"
+    )
     hotkey: Optional[str] = Field(default=None, description="Hotkey to trigger macro")
     enabled: bool = Field(default=True, description="Whether macro is active")
     repeat_count: int = Field(default=1, ge=0, description="Repeat count (0 = infinite)")

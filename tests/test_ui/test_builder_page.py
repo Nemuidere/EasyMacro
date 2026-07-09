@@ -17,8 +17,10 @@ from src.models.action import (
     KeyPressAction,
     MouseMoveAction,
     ActionType,
+    LoopBlock,
 )
-from src.ui.pages.builder_page import MacroBuilderPage, summarize_action
+from src.services.macro_service import MacroService
+from src.ui.pages.builder_page import MacroBuilderPage, summarize_action, ActionConfigDialog
 
 
 @pytest.fixture
@@ -132,6 +134,81 @@ def test_duplicate_creates_distinct_action(page):
     assert len(page._actions) == 2
     assert page._actions[0].id != page._actions[1].id
     assert page._actions[1].x == 5 and page._actions[1].y == 6
+
+
+def test_key_hold_with_modifiers(qapp):
+    d = ActionConfigDialog("key_hold")
+    d._key_capture.set_key("a")
+    d._mod_checks["ctrl"].setChecked(True)
+    d._mod_checks["shift"].setChecked(True)
+    d._on_accept()
+    actions = d.result_actions()
+    assert len(actions) == 1
+    assert actions[0].action_type == ActionType.KEY_HOLD
+    assert set(actions[0].modifiers) == {"ctrl", "shift"}
+
+
+def test_key_hold_for_duration_expands_to_three_steps(qapp):
+    d = ActionConfigDialog("key_hold")
+    d._key_capture.set_key("space")
+    d._hold_for_radio.setChecked(True)
+    d._hold_ms.setValue(750)
+    d._on_accept()
+    actions = d.result_actions()
+    assert [a.action_type for a in actions] == [
+        ActionType.KEY_HOLD,
+        ActionType.DELAY,
+        ActionType.KEY_RELEASE,
+    ]
+    assert actions[1].duration_ms == 750
+
+
+def test_loop_selected_wraps_contiguous_range(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1), ClickAction(x=2, y=2), ClickAction(x=3, y=3)]
+    page._refresh_list()
+    for r in (0, 1):
+        page._action_list.item(r).setSelected(True)
+
+    page._on_loop_selected()
+
+    assert len(page._actions) == 2
+    assert isinstance(page._actions[0], LoopBlock)
+    assert page._actions[0].count == 5
+    assert len(page._actions[0].actions) == 2
+    assert isinstance(page._actions[1], ClickAction)
+
+
+def test_ungroup_expands_loop(page):
+    page.reset()
+    page._actions = [LoopBlock(count=3, actions=[ClickAction(x=1, y=1), ClickAction(x=2, y=2)])]
+    page._refresh_list(select_index=0)
+    page._action_list.setCurrentRow(0)
+
+    page._on_ungroup()
+
+    assert len(page._actions) == 2
+    assert all(isinstance(a, ClickAction) for a in page._actions)
+
+
+def test_loop_macro_round_trips_through_json(page, macro_service):
+    page.reset()
+    page._name_input.setText("Looped")
+    page._actions = [
+        ClickAction(x=1, y=1),
+        LoopBlock(count=4, actions=[ClickAction(x=2, y=2), DelayAction(duration_ms=50)]),
+    ]
+    page._on_save()
+
+    # Force a real JSON reload from disk via a fresh service on the same path.
+    reloaded = MacroService(macro_service._macros_path)
+    macro = reloaded.get_all()[0]
+    assert isinstance(macro.actions[1], LoopBlock)
+    assert macro.actions[1].count == 4
+    assert len(macro.actions[1].actions) == 2
 
 
 def test_save_requires_name_and_actions(page, macro_service, monkeypatch):

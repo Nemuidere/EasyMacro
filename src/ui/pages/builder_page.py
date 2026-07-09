@@ -25,10 +25,13 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QCheckBox,
     QRadioButton,
+    QButtonGroup,
     QGroupBox,
     QDialog,
     QDialogButtonBox,
     QMessageBox,
+    QInputDialog,
+    QAbstractItemView,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -42,6 +45,7 @@ from src.models.action import (
     DelayAction,
     KeyPressAction,
     MouseMoveAction,
+    LoopBlock,
 )
 from src.services.macro_service import get_macro_service
 from src.ui.widgets.hotkey_input import HotkeyInput
@@ -174,6 +178,14 @@ def summarize_action(action: Action) -> str:
     return "Unknown action"
 
 
+def summarize_item(item) -> str:
+    """One-line summary of a macro item (a leaf action or a loop block)."""
+    if isinstance(item, LoopBlock):
+        inner = " · ".join(summarize_action(a) for a in item.actions) or "empty"
+        return f"⟳ Loop ×{item.count}  [ {inner} ]"
+    return summarize_action(item)
+
+
 class ActionConfigDialog(QDialog):
     """Modal dialog to create or edit a single action of a given kind.
 
@@ -268,16 +280,40 @@ class ActionConfigDialog(QDialog):
         self._key_capture = KeyCaptureButton()
         form.addRow("Key:", self._key_capture)
 
-        if self._kind == "key_press":
-            self._mod_checks = {}
-            mod_row = QHBoxLayout()
-            for mod in _MODIFIERS:
-                cb = QCheckBox(mod)
-                self._mod_checks[mod] = cb
-                mod_row.addWidget(cb)
-            container = QWidget()
-            container.setLayout(mod_row)
-            form.addRow("Modifiers:", container)
+        # Modifier check-boxes for every key kind (press, hold and release).
+        self._mod_checks = {}
+        mod_row = QHBoxLayout()
+        for mod in _MODIFIERS:
+            cb = QCheckBox(mod)
+            self._mod_checks[mod] = cb
+            mod_row.addWidget(cb)
+        container = QWidget()
+        container.setLayout(mod_row)
+        form.addRow("Modifiers:", container)
+
+        # Key hold: choose to hold until released/stopped, or for a fixed time.
+        if self._kind == "key_hold":
+            self._hold_mode = QButtonGroup(self)
+            self._hold_until_radio = QRadioButton("Hold until released / stopped")
+            self._hold_until_radio.setChecked(True)
+            self._hold_for_radio = QRadioButton("Hold for a fixed time")
+            self._hold_mode.addButton(self._hold_until_radio)
+            self._hold_mode.addButton(self._hold_for_radio)
+
+            self._hold_ms = QSpinBox()
+            self._hold_ms.setRange(1, 3_600_000)
+            self._hold_ms.setValue(1000)
+            self._hold_ms.setSuffix(" ms")
+            self._hold_ms.setEnabled(False)
+            self._hold_for_radio.toggled.connect(self._hold_ms.setEnabled)
+
+            form.addRow(self._hold_until_radio)
+            for_row = QHBoxLayout()
+            for_row.addWidget(self._hold_for_radio)
+            for_row.addWidget(self._hold_ms)
+            for_container = QWidget()
+            for_container.setLayout(for_row)
+            form.addRow(for_container)
 
     def _build_delay_fields(self, form: QFormLayout) -> None:
         self._duration_spin = QSpinBox()
@@ -305,9 +341,8 @@ class ActionConfigDialog(QDialog):
             self._smooth_check.setChecked(action.smooth)
         elif isinstance(action, KeyPressAction):
             self._key_capture.set_key(action.key)
-            if self._kind == "key_press":
-                for mod, cb in self._mod_checks.items():
-                    cb.setChecked(mod in action.modifiers)
+            for mod, cb in self._mod_checks.items():
+                cb.setChecked(mod in action.modifiers)
         elif isinstance(action, DelayAction):
             self._duration_spin.setValue(action.duration_ms)
 
@@ -325,7 +360,7 @@ class ActionConfigDialog(QDialog):
         """
         from src.ui.widgets.capture_overlay import CapturePanel
 
-        self._overlay = CapturePanel()
+        self._overlay = CapturePanel(self)
         self._overlay.captured.connect(self._on_position_captured)
         self._overlay.cancelled.connect(self._on_position_cancelled)
         self._overlay.show()
@@ -374,17 +409,43 @@ class ActionConfigDialog(QDialog):
             key = self._key_capture.key().strip()
             if not key:
                 raise ValueError("No key captured — click 'Key' and press a key")
+            mods = [m for m, cb in self._mod_checks.items() if cb.isChecked()]
             if self._kind == "key_press":
-                mods = [m for m, cb in self._mod_checks.items() if cb.isChecked()]
-                return KeyPressAction(key=key, modifiers=mods, action_type=ActionType.KEY_PRESS)
-            action_type = ActionType.KEY_HOLD if self._kind == "key_hold" else ActionType.KEY_RELEASE
-            return KeyPressAction(key=key, action_type=action_type)
+                action_type = ActionType.KEY_PRESS
+            elif self._kind == "key_hold":
+                action_type = ActionType.KEY_HOLD
+            else:
+                action_type = ActionType.KEY_RELEASE
+            return KeyPressAction(key=key, modifiers=mods, action_type=action_type)
         if self._kind == "delay":
             return DelayAction(duration_ms=self._duration_spin.value())
         raise ValueError(f"Unknown action kind: {self._kind}")
 
     def result_action(self) -> Optional[Action]:
         return self._result
+
+    def result_actions(self) -> List[Action]:
+        """Return the action(s) this dialog produced.
+
+        Usually a single action, but a "hold for a fixed time" key-hold expands
+        into three visible steps — hold, delay, release — so the timed hold is
+        transparent and editable in the list.
+        """
+        if self._result is None:
+            return []
+        if (
+            self._kind == "key_hold"
+            and getattr(self, "_hold_for_radio", None) is not None
+            and self._hold_for_radio.isChecked()
+        ):
+            hold: KeyPressAction = self._result  # type: ignore[assignment]
+            release = KeyPressAction(
+                key=hold.key,
+                modifiers=list(hold.modifiers),
+                action_type=ActionType.KEY_RELEASE,
+            )
+            return [hold, DelayAction(duration_ms=self._hold_ms.value()), release]
+        return [self._result]
 
 
 class MacroBuilderPage(QWidget):
@@ -449,7 +510,18 @@ class MacroBuilderPage(QWidget):
         self._remove_btn.setObjectName("dangerButton")
         for b in (self._up_btn, self._down_btn, self._dup_btn, self._remove_btn):
             side.addWidget(b)
+
+        side.addSpacing(10)
+        # Loop controls: select one or more contiguous rows, then "Loop …" wraps
+        # them into a repeat block; "Ungroup" expands a loop back to its steps.
+        self._loop_btn = QPushButton("Loop selected…")
+        self._ungroup_btn = QPushButton("Ungroup loop")
+        side.addWidget(self._loop_btn)
+        side.addWidget(self._ungroup_btn)
         side.addStretch()
+
+        # Allow selecting a contiguous range to group into a loop.
+        self._action_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         list_row.addLayout(side)
         layout.addLayout(list_row, 1)
 
@@ -513,6 +585,8 @@ class MacroBuilderPage(QWidget):
         self._dup_btn.clicked.connect(self._on_duplicate)
         self._remove_btn.clicked.connect(self._on_remove)
         self._insert_delays_btn.clicked.connect(self._on_insert_delays)
+        self._loop_btn.clicked.connect(self._on_loop_selected)
+        self._ungroup_btn.clicked.connect(self._on_ungroup)
         self._loop_check.toggled.connect(lambda looped: self._repeat_spin.setEnabled(not looped))
         self._save_btn.clicked.connect(self._on_save)
         self._cancel_btn.clicked.connect(lambda: self.cancel_requested.emit())
@@ -521,8 +595,8 @@ class MacroBuilderPage(QWidget):
 
     def _refresh_list(self, select_index: Optional[int] = None) -> None:
         self._action_list.clear()
-        for i, action in enumerate(self._actions):
-            self._action_list.addItem(QListWidgetItem(f"{i + 1}.  {summarize_action(action)}"))
+        for i, item in enumerate(self._actions):
+            self._action_list.addItem(QListWidgetItem(f"{i + 1}.  {summarize_item(item)}"))
         if select_index is not None and 0 <= select_index < self._action_list.count():
             self._action_list.setCurrentRow(select_index)
 
@@ -534,20 +608,73 @@ class MacroBuilderPage(QWidget):
     def _on_add(self) -> None:
         kind = self._add_type_combo.currentData()
         dialog = ActionConfigDialog(kind, parent=self)
-        if dialog.exec() == QDialog.Accepted and dialog.result_action() is not None:
-            self._actions.append(dialog.result_action())
-            self._refresh_list(select_index=len(self._actions) - 1)
+        if dialog.exec() == QDialog.Accepted:
+            new_actions = dialog.result_actions()
+            if new_actions:
+                self._actions.extend(new_actions)
+                self._refresh_list(select_index=len(self._actions) - 1)
 
     def _on_edit_item(self, item: QListWidgetItem) -> None:
         idx = self._action_list.row(item)
         if idx < 0:
             return
-        action = self._actions[idx]
-        kind = self._kind_for_action(action)
-        dialog = ActionConfigDialog(kind, existing=action, parent=self)
+        entry = self._actions[idx]
+
+        # Double-clicking a loop edits its repeat count.
+        if isinstance(entry, LoopBlock):
+            count, ok = QInputDialog.getInt(
+                self, "Loop count", "Repeat this block how many times?",
+                entry.count, 1, 1_000_000,
+            )
+            if ok:
+                entry.count = count
+                self._refresh_list(select_index=idx)
+            return
+
+        kind = self._kind_for_action(entry)
+        dialog = ActionConfigDialog(kind, existing=entry, parent=self)
         if dialog.exec() == QDialog.Accepted and dialog.result_action() is not None:
             self._actions[idx] = dialog.result_action()
             self._refresh_list(select_index=idx)
+
+    def _selected_rows(self) -> List[int]:
+        """Return the currently selected row indices, sorted ascending."""
+        return sorted(i.row() for i in self._action_list.selectedIndexes())
+
+    def _on_loop_selected(self) -> None:
+        """Wrap the selected contiguous rows into a loop block."""
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Loop", "Select one or more steps to loop.")
+            return
+        if rows != list(range(rows[0], rows[-1] + 1)):
+            QMessageBox.warning(self, "Loop", "Please select a contiguous range of steps.")
+            return
+        # Loops don't nest in the builder (keep it simple/legible).
+        if any(isinstance(self._actions[r], LoopBlock) for r in rows):
+            QMessageBox.warning(self, "Loop", "A selection that already contains a loop can't be looped again. Ungroup it first.")
+            return
+
+        count, ok = QInputDialog.getInt(
+            self, "Loop count", "Repeat the selected steps how many times?", 2, 1, 1_000_000
+        )
+        if not ok:
+            return
+
+        start, end = rows[0], rows[-1]
+        block = LoopBlock(count=count, actions=[a for a in self._actions[start:end + 1]])
+        self._actions[start:end + 1] = [block]
+        self._refresh_list(select_index=start)
+
+    def _on_ungroup(self) -> None:
+        """Expand the selected loop block back into its individual steps."""
+        idx = self._selected_index()
+        if idx < 0 or not isinstance(self._actions[idx], LoopBlock):
+            QMessageBox.information(self, "Ungroup", "Select a loop to ungroup.")
+            return
+        block: LoopBlock = self._actions[idx]
+        self._actions[idx:idx + 1] = list(block.actions)
+        self._refresh_list(select_index=idx)
 
     def _kind_for_action(self, action: Action) -> str:
         if isinstance(action, ClickAction):

@@ -26,6 +26,14 @@ def service(monkeypatch):
     return svc
 
 
+def test_sets_screen_coord_mode_on_init(monkeypatch):
+    # A freshly constructed service must pin AHK mouse coords to Screen so
+    # clicks are absolute, not relative to the active window.
+    monkeypatch.setattr(ahk_module, "AHK", MagicMock)
+    svc = AHKService()
+    svc._ahk.set_coord_mode.assert_called_with("Mouse", "Screen")
+
+
 def test_click_moves_then_clicks(service):
     service.click(100, 200, button="left", click_count=1)
 

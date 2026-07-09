@@ -41,9 +41,14 @@ class CapturePanel(QWidget):
     cancelled = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
-        # No parent: an independent top-level window with its own title bar.
-        super().__init__(None)
+        # Parented to the caller but shown as its own top-level window. It is
+        # made application-modal so that when it is opened from an already-modal
+        # dialog (the action config dialog), input still reaches it — otherwise
+        # the parent modal blocks every click/keypress and Windows just beeps
+        # while the panel appears frozen.
+        super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.setWindowTitle("Capture Position")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 

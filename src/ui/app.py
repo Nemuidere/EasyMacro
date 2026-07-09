@@ -194,6 +194,8 @@ class Application(QObject):
         self._main_window = MainWindow()
         self._main_window.setWindowTitle("EasyMacro")
         self._main_window.setMinimumSize(800, 600)
+        # Open ~1.5x wider than the minimum by default so the layout isn't cramped.
+        self._main_window.resize(1200, 720)
         
         # Apply stylesheet
         self._apply_theme()
