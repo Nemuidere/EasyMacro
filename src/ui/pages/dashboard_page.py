@@ -160,11 +160,30 @@ class DashboardPage(QWidget):
         self._refresh_stats()
     
     def _setup_ui(self) -> None:
-        """Set up the user interface."""
-        layout = QVBoxLayout(self)
+        """Set up the user interface.
+
+        The whole page lives inside a vertical scroll area so its content is
+        never clipped when the window is short (previously the hotkeys section
+        got cut off unless the window was stretched tall enough).
+        """
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        page_scroll = QScrollArea(self)
+        page_scroll.setWidgetResizable(True)
+        page_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        content.setObjectName("dashboardContent")
+        page_scroll.setWidget(content)
+        outer.addWidget(page_scroll)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(20)
-        
+
         # Page title
         title = QLabel("Dashboard")
         title.setObjectName("pageTitle")
@@ -370,17 +389,18 @@ class DashboardPage(QWidget):
             formatted_time = self._format_time(global_stats.total_time_seconds)
             self._total_time_card.set_value(formatted_time)
             
-            # Update last used
+            # Update last used — show the macro's NAME, not its raw id.
             if global_stats.last_used_macro_id:
+                macro_name = self._resolve_macro_name(global_stats.last_used_macro_id)
                 last_macro_stats = stats_service.get_macro_stats(
                     global_stats.last_used_macro_id
                 )
                 if last_macro_stats and last_macro_stats.last_used_at:
                     time_str = last_macro_stats.last_used_at.strftime("%Y-%m-%d %H:%M")
-                    self._last_used_card.set_value(global_stats.last_used_macro_id)
+                    self._last_used_card.set_value(macro_name)
                     self._last_used_card.set_subtitle(f"Last used: {time_str}")
                 else:
-                    self._last_used_card.set_value(global_stats.last_used_macro_id)
+                    self._last_used_card.set_value(macro_name)
                     self._last_used_card.set_subtitle("Recently used")
             else:
                 self._last_used_card.set_value("Never")
@@ -393,6 +413,23 @@ class DashboardPage(QWidget):
             self._last_used_card.set_value("Never")
             self._last_used_card.set_subtitle("No recent activity")
     
+    def _resolve_macro_name(self, macro_id: str) -> str:
+        """Return a macro's display name for a given id.
+
+        Falls back to a short id fragment if the macro no longer exists (e.g.
+        it was deleted but its stats remain).
+
+        Args:
+            macro_id: The macro id to resolve.
+
+        Returns:
+            The macro name, or a short "(deleted …)" placeholder.
+        """
+        try:
+            return get_macro_service().get(macro_id).name
+        except Exception:
+            return f"(deleted {macro_id[:8]})"
+
     def _format_time(self, seconds: float) -> str:
         """Format seconds as HH:MM:SS.
         

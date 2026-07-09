@@ -34,7 +34,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from src.core.logger import get_logger
-from src.core.event_bus import get_event_bus
 from src.models.macro import Macro
 from src.models.action import (
     Action,
@@ -45,7 +44,6 @@ from src.models.action import (
     MouseMoveAction,
 )
 from src.services.macro_service import get_macro_service
-from src.services.position_capture_service import get_position_capture_service
 from src.ui.widgets.hotkey_input import HotkeyInput
 
 
@@ -61,6 +59,94 @@ ACTION_KINDS = [
 ]
 
 _MODIFIERS = ("ctrl", "alt", "shift")
+
+
+def _build_qt_key_map() -> dict:
+    """Map Qt key codes (as ints) to engine/AHK-friendly key names."""
+    mapping = {
+        int(Qt.Key.Key_Return): "enter",
+        int(Qt.Key.Key_Enter): "enter",
+        int(Qt.Key.Key_Space): "space",
+        int(Qt.Key.Key_Escape): "escape",
+        int(Qt.Key.Key_Tab): "tab",
+        int(Qt.Key.Key_Backspace): "backspace",
+        int(Qt.Key.Key_Delete): "delete",
+        int(Qt.Key.Key_Up): "up",
+        int(Qt.Key.Key_Down): "down",
+        int(Qt.Key.Key_Left): "left",
+        int(Qt.Key.Key_Right): "right",
+        int(Qt.Key.Key_Home): "home",
+        int(Qt.Key.Key_End): "end",
+        int(Qt.Key.Key_PageUp): "pageup",
+        int(Qt.Key.Key_PageDown): "pagedown",
+        int(Qt.Key.Key_Insert): "insert",
+        int(Qt.Key.Key_Shift): "shift",
+        int(Qt.Key.Key_Control): "ctrl",
+        int(Qt.Key.Key_Alt): "alt",
+    }
+    for i in range(1, 25):
+        mapping[int(getattr(Qt.Key, f"Key_F{i}"))] = f"f{i}"
+    return mapping
+
+
+_QT_KEY_MAP = _build_qt_key_map()
+
+
+class KeyCaptureButton(QPushButton):
+    """A button that captures the next physical key press instead of typing.
+
+    Click it, then press any key; the resolved key name is stored and shown.
+    Printable characters use the typed character; special keys (Enter, F5,
+    arrows, modifiers, …) map to engine/AHK-friendly names.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._key = ""
+        self._capturing = False
+        self.setCheckable(True)
+        self._refresh_text()
+        self.clicked.connect(self._on_clicked)
+
+    def _on_clicked(self) -> None:
+        self._capturing = True
+        self.setChecked(True)
+        self.setText("Press any key…")
+        self.setFocus()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+        name = self._resolve(event)
+        if name is None:
+            return  # ignore unresolvable keys; keep listening
+        self._key = name
+        self._capturing = False
+        self.setChecked(False)
+        self._refresh_text()
+
+    @staticmethod
+    def _resolve(event) -> Optional[str]:
+        code = int(event.key())
+        if code in _QT_KEY_MAP:
+            return _QT_KEY_MAP[code]
+        text = event.text()
+        if text and text.isprintable() and not text.isspace():
+            return text.lower()
+        return None
+
+    def _refresh_text(self) -> None:
+        self.setText(f"Key: {self._key}" if self._key else "Click, then press a key")
+
+    def key(self) -> str:
+        return self._key
+
+    def set_key(self, key: str) -> None:
+        self._key = key or ""
+        self._capturing = False
+        self.setChecked(False)
+        self._refresh_text()
 
 
 def summarize_action(action: Action) -> str:
@@ -107,7 +193,7 @@ class ActionConfigDialog(QDialog):
         self._kind = kind
         self._existing = existing
         self._result: Optional[Action] = None
-        self._eventbus_connected = False
+        self._overlay = None
 
         self.setWindowTitle(f"Configure: {dict(ACTION_KINDS).get(kind, kind)}")
         self.setModal(True)
@@ -179,9 +265,8 @@ class ActionConfigDialog(QDialog):
         form.addRow(self._smooth_check)
 
     def _build_key_fields(self, form: QFormLayout) -> None:
-        self._key_edit = QLineEdit()
-        self._key_edit.setPlaceholderText("e.g. a, enter, space, f5")
-        form.addRow("Key:", self._key_edit)
+        self._key_capture = KeyCaptureButton()
+        form.addRow("Key:", self._key_capture)
 
         if self._kind == "key_press":
             self._mod_checks = {}
@@ -219,7 +304,7 @@ class ActionConfigDialog(QDialog):
             self._speed_spin.setValue(action.speed)
             self._smooth_check.setChecked(action.smooth)
         elif isinstance(action, KeyPressAction):
-            self._key_edit.setText(action.key)
+            self._key_capture.set_key(action.key)
             if self._kind == "key_press":
                 for mod, cb in self._mod_checks.items():
                     cb.setChecked(mod in action.modifiers)
@@ -233,61 +318,26 @@ class ActionConfigDialog(QDialog):
             w.setEnabled(not use_cursor)
 
     def _start_capture(self) -> None:
-        """Capture a screen position via F2 using the position capture service.
+        """Capture a screen position with the full-screen overlay.
 
-        Shows an always-on-top prompt; the dialog's own (modal) event loop keeps
-        processing the queued position_captured / cancelled events, so no window
-        needs to be minimised here.
+        Reliable, pure-Qt: the user clicks the target position on a translucent
+        always-on-top overlay; the click never reaches the underlying window.
         """
-        try:
-            service = get_position_capture_service()
-        except RuntimeError as e:
-            QMessageBox.warning(self, "Capture unavailable", str(e))
-            return
+        from src.ui.widgets.capture_overlay import CaptureOverlay
 
-        event_bus = get_event_bus()
-        if not self._eventbus_connected:
-            event_bus.position_captured.connect(self._on_position_captured)
-            event_bus.position_capture_cancelled.connect(self._on_position_cancelled)
-            self._eventbus_connected = True
-
-        if not service.start_capture_delayed(capture_key="f2", timeout_ms=30000, delay_ms=100):
-            return
-
-        self._capture_prompt = QMessageBox(self)
-        self._capture_prompt.setWindowTitle("Capture Position")
-        self._capture_prompt.setText(
-            "Move the mouse to the target and press F2.\nPress Esc to cancel."
-        )
-        self._capture_prompt.setStandardButtons(QMessageBox.NoButton)
-        self._capture_prompt.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        self._capture_prompt.show()
-        self._capture_prompt.raise_()
-
-    def _close_capture_prompt(self) -> None:
-        prompt = getattr(self, "_capture_prompt", None)
-        if prompt is not None:
-            prompt.close()
-            self._capture_prompt = None
+        self._overlay = CaptureOverlay()
+        self._overlay.captured.connect(self._on_position_captured)
+        self._overlay.cancelled.connect(self._on_position_cancelled)
+        self._overlay.show()
 
     def _on_position_captured(self, x: int, y: int) -> None:
+        # Spin-box minimum is 0, so any negative multi-monitor coord clamps.
         self._x_spin.setValue(x)
         self._y_spin.setValue(y)
-        self._close_capture_prompt()
+        self._overlay = None
 
     def _on_position_cancelled(self) -> None:
-        self._close_capture_prompt()
-
-    def _disconnect_eventbus(self) -> None:
-        if not self._eventbus_connected:
-            return
-        self._eventbus_connected = False
-        try:
-            event_bus = get_event_bus()
-            event_bus.position_captured.disconnect(self._on_position_captured)
-            event_bus.position_capture_cancelled.disconnect(self._on_position_cancelled)
-        except (RuntimeError, TypeError):
-            pass
+        self._overlay = None
 
     # -- result -------------------------------------------------------------
 
@@ -297,13 +347,9 @@ class ActionConfigDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Invalid action", str(e))
             return
-        self._close_capture_prompt()
-        self._disconnect_eventbus()
         self.accept()
 
     def reject(self) -> None:  # type: ignore[override]
-        self._close_capture_prompt()
-        self._disconnect_eventbus()
         super().reject()
 
     def _build_action(self) -> Action:
@@ -325,9 +371,9 @@ class ActionConfigDialog(QDialog):
                 smooth=self._smooth_check.isChecked(),
             )
         if self._kind in ("key_press", "key_hold", "key_release"):
-            key = self._key_edit.text().strip()
+            key = self._key_capture.key().strip()
             if not key:
-                raise ValueError("Key cannot be empty")
+                raise ValueError("No key captured — click 'Key' and press a key")
             if self._kind == "key_press":
                 mods = [m for m, cb in self._mod_checks.items() if cb.isChecked()]
                 return KeyPressAction(key=key, modifiers=mods, action_type=ActionType.KEY_PRESS)
