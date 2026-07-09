@@ -75,6 +75,7 @@ class EditorPage(QWidget):
         self._is_cursor_mode = True  # Default to cursor mode
         self._modifiers: list[str] = []  # TODO: Will be added to ClickAction in Phase 4
         self._logger = get_logger("editor_page")
+        self._eventbus_connected = False
         
         self._setup_ui()
         self._connect_signals()
@@ -336,6 +337,7 @@ class EditorPage(QWidget):
             event_bus = get_event_bus()
             event_bus.position_captured.connect(self._on_position_captured)
             event_bus.position_capture_cancelled.connect(self._on_position_cancelled)
+            self._eventbus_connected = True
         except RuntimeError as e:
             self._logger.warning(f"EventBus not initialized: {e}")
 
@@ -739,27 +741,29 @@ class EditorPage(QWidget):
         self._load_macro(macro_id)
     
     def _cleanup(self) -> None:
-        """Clean up resources when page is hidden/destroyed."""
+        """Tear down long-lived resources when the page is destroyed.
+
+        This must run only once, at real teardown (window close), NOT on every
+        ``hideEvent``. The page is a persistent widget inside the main stacked
+        container, so it is hidden/shown on every navigation; disconnecting the
+        EventBus here on each hide would permanently break position capture
+        after the first navigation away and spam "Failed to disconnect"
+        warnings on subsequent hides.
+        """
         self._stop_capture()
 
-        # Disconnect from EventBus - wrap each disconnect in try/except
-        try:
-            event_bus = get_event_bus()
+        # Disconnect from EventBus exactly once, and only if we actually
+        # connected. Guarding by the flag avoids the libpyside RuntimeWarning
+        # that a redundant disconnect emits (it is a warning, not an exception,
+        # so a try/except cannot suppress it).
+        if self._eventbus_connected:
+            self._eventbus_connected = False
             try:
+                event_bus = get_event_bus()
                 event_bus.position_captured.disconnect(self._on_position_captured)
-            except (RuntimeError, TypeError):
-                pass  # Signal not connected or EventBus destroyed
-        except RuntimeError:
-            pass  # EventBus not initialized
-
-        try:
-            event_bus = get_event_bus()
-            try:
                 event_bus.position_capture_cancelled.disconnect(self._on_position_cancelled)
             except (RuntimeError, TypeError):
-                pass  # Signal not connected or EventBus destroyed
-        except RuntimeError:
-            pass  # EventBus not initialized
+                pass  # EventBus not initialized / already torn down
 
         # Cleanup hotkey input
         if hasattr(self, '_hotkey_input'):
@@ -767,13 +771,18 @@ class EditorPage(QWidget):
                 self._hotkey_input.cleanup()
             except Exception:
                 pass  # Ignore cleanup errors during shutdown
-    
+
     def closeEvent(self, event) -> None:
-        """Handle widget close event."""
+        """Handle widget close event (real teardown)."""
         self._cleanup()
         super().closeEvent(event)
-    
+
     def hideEvent(self, event) -> None:
-        """Handle widget hide event."""
-        self._cleanup()
+        """Handle widget hide event.
+
+        Fired on every navigation away from this page. Only cancel any active
+        position capture here; keep the EventBus connections intact so capture
+        keeps working when the user navigates back.
+        """
+        self._stop_capture()
         super().hideEvent(event)

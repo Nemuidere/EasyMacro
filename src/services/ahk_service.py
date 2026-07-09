@@ -10,6 +10,7 @@ Dependencies:
     For more information, see: https://github.com/spyoungtech/ahk
 """
 
+import time
 from typing import Optional, Tuple
 from pathlib import Path
 
@@ -63,23 +64,17 @@ class AHKService:
         
         self._logger.debug(f"Click at ({x}, {y}) with button {button}")
         
+        if button not in ("left", "right", "middle"):
+            raise ValueError(f"Unknown button: {button}")
+
         try:
-            # Move to position
+            # Move to position, then click there. python-ahk's AHK object
+            # exposes a single `click` method (there is no `left_click`/
+            # `middle_click`); the button is selected via the `button` kwarg,
+            # which accepts "left"/"right"/"middle".
             self._ahk.mouse_move(x, y, speed=0)
-            
-            # Perform click
-            if button == "left":
-                for _ in range(click_count):
-                    self._ahk.left_click()
-            elif button == "right":
-                for _ in range(click_count):
-                    self._ahk.right_click()
-            elif button == "middle":
-                for _ in range(click_count):
-                    self._ahk.middle_click()
-            else:
-                raise ValueError(f"Unknown button: {button}")
-                
+            self._ahk.click(button=button, click_count=click_count)
+
         except Exception as e:
             self._logger.error(f"Click failed: {e}")
             raise MacroExecutionError(f"Click failed: {e}") from e
@@ -233,8 +228,9 @@ class AHKService:
         """
         if milliseconds < 0:
             raise ValueError(f"Duration cannot be negative: {milliseconds}")
-        
-        self._ahk.sleep(milliseconds)
+
+        # python-ahk's AHK object has no `sleep`; use a plain Python sleep.
+        time.sleep(milliseconds / 1000.0)
 
 
 # Global singleton instance
