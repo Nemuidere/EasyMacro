@@ -78,7 +78,6 @@ class AppSettings(EasyMacroBaseModel):
         hotkeys: Hotkey bindings.
         start_minimized: Start app minimized to tray.
         close_to_tray: Close to system tray instead of quitting.
-        check_updates: Check for updates on startup.
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
         config_version: Configuration schema version.
         stop_on_mouse_movement: Stop macros when mouse moves.
@@ -96,7 +95,6 @@ class AppSettings(EasyMacroBaseModel):
     )
     start_minimized: bool = Field(default=False, description="Start minimized to tray")
     close_to_tray: bool = Field(default=True, description="Close to system tray")
-    check_updates: bool = Field(default=True, description="Check for updates on startup")
     log_level: str = Field(default="INFO", description="Logging level")
     config_version: int = Field(default=1, description="Configuration schema version")
     stop_on_mouse_movement: bool = Field(default=True, description="Stop macros on mouse movement")

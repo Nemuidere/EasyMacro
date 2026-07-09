@@ -323,9 +323,9 @@ class ActionConfigDialog(QDialog):
         Reliable, pure-Qt: the user clicks the target position on a translucent
         always-on-top overlay; the click never reaches the underlying window.
         """
-        from src.ui.widgets.capture_overlay import CaptureOverlay
+        from src.ui.widgets.capture_overlay import CapturePanel
 
-        self._overlay = CaptureOverlay()
+        self._overlay = CapturePanel()
         self._overlay.captured.connect(self._on_position_captured)
         self._overlay.cancelled.connect(self._on_position_cancelled)
         self._overlay.show()

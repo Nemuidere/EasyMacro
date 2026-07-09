@@ -227,11 +227,14 @@ QPushButton {
     background-color: #2A2A2A;
     border: 1px solid #3A3A3A;
     border-radius: 8px;
-    padding: 10px 20px;
+    padding: 8px 18px;
     font-size: 14px;
     font-weight: bold;
     color: #ECECEC;
     min-width: 80px;
+    /* Hard floor so button text is never vertically clipped when a column of
+       buttons is compressed (e.g. the builder's Add/Move/Duplicate/Remove). */
+    min-height: 20px;
 }
 
 QPushButton:hover {

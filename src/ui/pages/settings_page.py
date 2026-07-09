@@ -113,48 +113,36 @@ class SettingsPage(QWidget):
         
         self._start_minimized = QCheckBox("Start minimized to tray")
         app_layout.addRow(self._start_minimized)
-        
+
         self._close_to_tray = QCheckBox("Close to system tray")
         self._close_to_tray.setChecked(True)
         app_layout.addRow(self._close_to_tray)
-        
-        self._check_updates = QCheckBox("Check for updates on startup")
-        self._check_updates.setChecked(True)
-        app_layout.addRow(self._check_updates)
-        
-        # Safety features - Stop on mouse movement
-        self._stop_on_mouse_move = QCheckBox("Stop on Mouse Movement")
+
+        layout.addWidget(app_group)
+
+        # Safety settings group — interrupt a running macro when the user moves
+        # the mouse. Both the toggle and the threshold live here and are live.
+        safety_group = QGroupBox("Safety Features")
+        safety_group.setMinimumWidth(400)
+        safety_layout = QFormLayout(safety_group)
+        safety_layout.setSpacing(10)
+
+        self._stop_on_mouse_move = QCheckBox("Stop macros on manual mouse movement")
         self._stop_on_mouse_move.setChecked(True)
         self._stop_on_mouse_move.setToolTip(
-            "Automatically stop running macros when mouse moves significantly"
+            "Automatically stop running macros when you move the mouse significantly"
         )
-        app_layout.addRow(self._stop_on_mouse_move)
-        
-        # Mouse movement threshold
+        safety_layout.addRow(self._stop_on_mouse_move)
+
         self._mouse_threshold = QSpinBox()
         self._mouse_threshold.setRange(0, 500)
         self._mouse_threshold.setValue(50)
         self._mouse_threshold.setSuffix(" px")
         self._mouse_threshold.setToolTip(
-            "Distance in pixels before macro is stopped (0-500)"
+            "How far the mouse must move (in pixels) before a running macro stops"
         )
-        app_layout.addRow("Mouse Movement Threshold:", self._mouse_threshold)
-        
-        layout.addWidget(app_group)
-        
-        # Safety settings group
-        safety_group = QGroupBox("Safety Features")
-        safety_group.setMinimumWidth(400)
-        safety_layout = QVBoxLayout(safety_group)
-        
-        safety_info = QLabel(
-            "Macro execution can be interrupted by moving your mouse "
-            "beyond the configured threshold distance."
-        )
-        safety_info.setWordWrap(True)
-        safety_info.setStyleSheet("color: #888; font-size: 12px;")
-        safety_layout.addWidget(safety_info)
-        
+        safety_layout.addRow("Movement threshold:", self._mouse_threshold)
+
         layout.addWidget(safety_group)
         
         # Randomization settings group (for defaults)
@@ -277,21 +265,21 @@ class SettingsPage(QWidget):
         appearance_layout.addRow("Theme:", self._theme_combo)
         
         layout.addWidget(appearance_group)
-        
-        # Save button
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        self._save_button = QPushButton("Save Settings")
-        self._save_button.setObjectName("primaryButton")
-        button_layout.addWidget(self._save_button)
-        
-        layout.addLayout(button_layout)
         layout.addStretch()
-        
+
         # Set content widget on scroll area
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area)
+
+        # Save button — pinned OUTSIDE the scroll area so it is always visible
+        # without scrolling to the bottom.
+        button_bar = QHBoxLayout()
+        button_bar.setContentsMargins(30, 10, 30, 20)
+        button_bar.addStretch()
+        self._save_button = QPushButton("Save Settings")
+        self._save_button.setObjectName("primaryButton")
+        button_bar.addWidget(self._save_button)
+        main_layout.addLayout(button_bar)
     
     def _connect_signals(self) -> None:
         """Connect button signals."""
@@ -338,7 +326,6 @@ class SettingsPage(QWidget):
             # Load application settings
             self._start_minimized.setChecked(settings.start_minimized)
             self._close_to_tray.setChecked(settings.close_to_tray)
-            self._check_updates.setChecked(settings.check_updates)
             self._stop_on_mouse_move.setChecked(settings.stop_on_mouse_movement)
             self._mouse_threshold.setValue(settings.mouse_movement_threshold)
             
@@ -390,7 +377,6 @@ class SettingsPage(QWidget):
                 ),
                 start_minimized=self._start_minimized.isChecked(),
                 close_to_tray=self._close_to_tray.isChecked(),
-                check_updates=self._check_updates.isChecked(),
                 stop_on_mouse_movement=self._stop_on_mouse_move.isChecked(),
                 mouse_movement_threshold=self._mouse_threshold.value(),
             )

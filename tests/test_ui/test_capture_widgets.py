@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QKeyEvent
 
 from src.ui.pages.builder_page import KeyCaptureButton
-from src.ui.widgets.capture_overlay import CaptureOverlay
+from src.ui.widgets.capture_overlay import CapturePanel
 
 
 def _key_event(qt_key, text=""):
@@ -54,18 +54,37 @@ def test_set_and_get_key(qapp):
     assert btn.key() == "enter"
 
 
-def test_overlay_capture_emits_once(qapp):
-    overlay = CaptureOverlay()
+def test_panel_capture_emits_once(qapp):
+    panel = CapturePanel()
     got = []
-    overlay.captured.connect(lambda x, y: got.append((x, y)))
-    overlay._finish_capture()
-    overlay._finish_capture()  # idempotent
+    panel.captured.connect(lambda x, y: got.append((x, y)))
+    panel._finish_capture()
+    panel._finish_capture()  # idempotent
     assert len(got) == 1
 
 
-def test_overlay_cancel_emits(qapp):
-    overlay = CaptureOverlay()
+def test_panel_cancel_emits(qapp):
+    panel = CapturePanel()
     cancelled = []
-    overlay.cancelled.connect(lambda: cancelled.append(True))
-    overlay._finish_cancel()
+    panel.cancelled.connect(lambda: cancelled.append(True))
+    panel._finish_cancel()
+    assert cancelled == [True]
+
+
+def test_panel_countdown_captures(qapp):
+    panel = CapturePanel()
+    got = []
+    panel.captured.connect(lambda x, y: got.append((x, y)))
+    panel._start_countdown()
+    # Drive the countdown ticks to zero without waiting real seconds.
+    for _ in range(5):
+        panel._tick()
+    assert len(got) == 1
+
+
+def test_panel_close_counts_as_cancel(qapp):
+    panel = CapturePanel()
+    cancelled = []
+    panel.cancelled.connect(lambda: cancelled.append(True))
+    panel.close()
     assert cancelled == [True]

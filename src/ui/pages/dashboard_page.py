@@ -260,17 +260,16 @@ class DashboardPage(QWidget):
         self._hotkeys_layout.setSpacing(5)
         self._hotkeys_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
-        # Scroll area for hotkeys
+        # Scroll area for hotkeys — grows to fill the remaining vertical space
+        # (no fixed max height, and it takes the layout's stretch so there is no
+        # empty gap beneath it).
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(hotkeys_frame)
-        scroll.setMaximumHeight(200)
         scroll.setObjectName("hotkeysScrollArea")
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        
-        layout.addWidget(scroll)
-        
-        layout.addStretch()
+
+        layout.addWidget(scroll, 1)
     
     def _connect_signals(self) -> None:
         """Connect to EventBus signals."""

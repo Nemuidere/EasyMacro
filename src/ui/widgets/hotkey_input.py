@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QMessageBox,
-    QGroupBox,
 )
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 
@@ -61,7 +60,7 @@ class HotkeyState:
         return "+".join(all_keys) if all_keys else ""
 
 
-class HotkeyInput(QGroupBox):
+class HotkeyInput(QWidget):
     """Widget for capturing and displaying hotkey combinations.
 
     Uses pynput for global keyboard capture with proper resource cleanup.
@@ -130,17 +129,25 @@ class HotkeyInput(QGroupBox):
             pass
 
     def _setup_ui(self) -> None:
-        """Set up the user interface."""
-        self.setTitle(self._label_text)
+        """Set up the user interface as a single inline row.
 
+        Layout: [name]  [hotkey display]  … [Capture] [Cancel] [Default].
+        No group-box title, so there is no wasted vertical space above the row.
+        """
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 15, 10, 10)
+        layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(10)
+
+        # Name on the left
+        name_label = QLabel(self._label_text)
+        name_label.setObjectName("hotkeyName")
+        name_label.setMinimumWidth(150)
+        layout.addWidget(name_label)
 
         # Hotkey display label
         self._hotkey_label = QLabel("No hotkey set")
         self._hotkey_label.setStyleSheet("font-weight: bold; padding: 5px;")
-        self._hotkey_label.setMinimumWidth(150)
+        self._hotkey_label.setMinimumWidth(120)
         layout.addWidget(self._hotkey_label)
 
         layout.addStretch()

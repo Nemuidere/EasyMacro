@@ -136,8 +136,8 @@ class MainWindow(QMainWindow):
         # Spacer
         layout.addStretch()
         
-        # Version label
-        version_label = QLabel("v0.1.0")
+        # Signature label (bottom of the sidebar)
+        version_label = QLabel("Nemuidere.")
         version_label.setAlignment(Qt.AlignCenter)
         version_label.setObjectName("versionLabel")
         layout.addWidget(version_label)
