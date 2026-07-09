@@ -39,6 +39,7 @@ class EventBus(QObject):
     
     # Settings events
     settings_changed = Signal(str, object)  # key, value
+    settings_saved = Signal(object)  # full AppSettings after a save
     
     # Stats events
     stats_updated = Signal(str, int, float)  # macro_id, clicks, time_seconds

@@ -43,7 +43,7 @@ class ClickAction(EasyMacroBaseModel):
     y: int = Field(ge=0, description="Y coordinate")
     button: str = Field(default="left", description="Mouse button")
     modifiers: list[str] = Field(default_factory=list, description="Modifier keys to hold during click")
-    jitter_radius: int = Field(default=5, ge=0, description="Randomization radius in pixels")
+    jitter_radius: int = Field(default=2, ge=0, description="Randomization radius in pixels")
     use_cursor_position: bool = Field(default=False, description="Use current cursor position")
     
     @field_validator("button")
@@ -98,7 +98,7 @@ class DelayAction(EasyMacroBaseModel):
     action_type: ActionType = Field(default=ActionType.DELAY, frozen=True)
     duration_ms: int = Field(ge=0, description="Duration in milliseconds")
     variance_percent: int = Field(
-        default=20,
+        default=5,
         ge=0,
         le=100,
         description="Randomization variance percentage"

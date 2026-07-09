@@ -4,7 +4,6 @@ Settings page for EasyMacro.
 Allows configuration of application settings with scrollable layout.
 """
 
-import sys
 from typing import Optional, Dict
 from pathlib import Path
 from PySide6.QtWidgets import (
@@ -26,6 +25,8 @@ from PySide6.QtGui import QFont
 
 from src.models.settings import AppSettings, RandomizationSettings, HotkeySettings, Theme
 from src.core.config import ConfigManager
+from src.core.constants import get_config_path
+from src.core.event_bus import get_event_bus
 from src.core.randomization import get_randomization_engine
 from src.core.logger import get_logger
 from src.ui.widgets.hotkey_input import HotkeyInput
@@ -37,17 +38,6 @@ DEFAULT_RESUME_ALL = "ctrl+shift+r"
 DEFAULT_STOP_ALL = "ctrl+shift+s"
 DEFAULT_CAPTURE_POSITION = "f2"
 DEFAULT_CANCEL_CAPTURE = "escape"
-
-
-def get_config_path() -> Path:
-    """Get absolute path to config file."""
-    if getattr(sys, 'frozen', False):
-        # Running as compiled executable
-        app_dir = Path(sys.executable).parent
-    else:
-        # Running as script
-        app_dir = Path(__file__).parent.parent.parent
-    return app_dir / "data" / "config.json"
 
 
 class SettingsPage(QWidget):
@@ -178,19 +168,19 @@ class SettingsPage(QWidget):
         
         self._jitter_radius = QSpinBox()
         self._jitter_radius.setRange(0, 50)
-        self._jitter_radius.setValue(5)
+        self._jitter_radius.setValue(2)
         self._jitter_radius.setSuffix(" px")
         randomization_layout.addRow("Jitter Radius:", self._jitter_radius)
         
         self._timing_variance = QSpinBox()
         self._timing_variance.setRange(0, 100)
-        self._timing_variance.setValue(20)
+        self._timing_variance.setValue(5)
         self._timing_variance.setSuffix(" %")
         randomization_layout.addRow("Timing Variance:", self._timing_variance)
         
         self._speed_variation = QSpinBox()
         self._speed_variation.setRange(0, 50)
-        self._speed_variation.setValue(10)
+        self._speed_variation.setValue(5)
         self._speed_variation.setSuffix(" %")
         randomization_layout.addRow("Speed Variation:", self._speed_variation)
         
@@ -413,9 +403,17 @@ class SettingsPage(QWidget):
             # Update randomization engine
             engine = get_randomization_engine()
             engine.update_settings(settings.randomization)
-            
+
             self._logger.info("Settings saved")
             self.settings_saved.emit()
+
+            # Broadcast on the event bus so any component (dashboard, running
+            # engine, hotkey registrations) can apply the change live without a
+            # restart.
+            try:
+                get_event_bus().settings_saved.emit(settings)
+            except RuntimeError:
+                self._logger.warning("Event bus not initialized; settings not broadcast")
             
             # Show success message
             msg = QMessageBox(self)

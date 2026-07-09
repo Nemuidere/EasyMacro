@@ -100,6 +100,11 @@ class MacroEngine(QObject):
         self._repeat_count: int = 0
         self._current_repeat: int = 0
         self._macro_start_time: float = 0.0
+
+        # Keys currently held down via KEY_HOLD actions. Tracked so they can be
+        # force-released if the macro stops/errors mid-hold, preventing a key
+        # from being stuck down after execution ends.
+        self._held_keys: set[str] = set()
         
         # Stop on mouse movement settings
         self._stop_on_mouse_movement: bool = True
@@ -214,10 +219,11 @@ class MacroEngine(QObject):
             self._mouse_movement_service.stop_monitoring()
         
         self._delay_timer.stop()
+        self._release_held_keys()
         self._execution_state = ExecutionState.STOPPED
         self._state.set(AppState.IDLE)
         self._state.set_current_macro(None)
-        
+
         if self._current_macro:
             self._event_bus.macro_stopped.emit(self._current_macro.id)
         
@@ -361,9 +367,13 @@ class MacroEngine(QObject):
             if action.action_type == ActionType.DOUBLE_CLICK:
                 click_count = 2
 
+            # RIGHT_CLICK forces the right button; otherwise honor the action's
+            # configured button (left/right/middle).
+            button = "right" if action.action_type == ActionType.RIGHT_CLICK else action.button
+
             # Perform click
-            ahk.click(x, y, button=action.button, click_count=click_count)
-            
+            ahk.click(x, y, button=button, click_count=click_count)
+
         finally:
             # Release modifiers in reverse order
             for mod in MODIFIER_KEY_UP_ORDER:
@@ -375,18 +385,32 @@ class MacroEngine(QObject):
             self._stats.update_clicks(self._current_macro.id, click_count)
 
     def _execute_key_press(self, action: KeyPressAction) -> None:
-        """Execute a key press action.
+        """Execute a key press / hold / release action.
+
+        The concrete behaviour is selected by ``action.action_type``:
+          * ``KEY_PRESS``   — press and release the key (with modifiers).
+          * ``KEY_HOLD``    — press the key down and leave it held.
+          * ``KEY_RELEASE`` — release a previously-held key.
+
+        Held keys are tracked so a stop/error can force-release them.
 
         Args:
-            action: Key press action to execute.
+            action: Key action to execute.
         """
-        self._logger.debug(f"Key press: {action.key} with modifiers {action.modifiers}")
-
-        # Get AHK service
         from src.services.ahk_service import get_ahk_service
         ahk = get_ahk_service()
 
-        ahk.key_press(action.key, action.modifiers)
+        if action.action_type == ActionType.KEY_HOLD:
+            self._logger.debug(f"Key down (hold): {action.key}")
+            ahk.key_down(action.key)
+            self._held_keys.add(action.key)
+        elif action.action_type == ActionType.KEY_RELEASE:
+            self._logger.debug(f"Key up (release): {action.key}")
+            ahk.key_up(action.key)
+            self._held_keys.discard(action.key)
+        else:
+            self._logger.debug(f"Key press: {action.key} with modifiers {action.modifiers}")
+            ahk.key_press(action.key, action.modifiers)
     
     def _execute_mouse_move(self, action: MouseMoveAction) -> None:
         """Execute a mouse move action.
@@ -413,6 +437,28 @@ class MacroEngine(QObject):
         ahk = get_ahk_service()
 
         ahk.mouse_move(x, y, speed=speed, smooth=action.smooth)
+
+    def _release_held_keys(self) -> None:
+        """Release any keys left held by KEY_HOLD actions.
+
+        Called on stop/complete/error so a held key is never left stuck down
+        after execution ends. Best-effort: individual failures are swallowed.
+        """
+        if not self._held_keys:
+            return
+
+        try:
+            from src.services.ahk_service import get_ahk_service
+            ahk = get_ahk_service()
+            for key in list(self._held_keys):
+                try:
+                    ahk.key_up(key)
+                except Exception as e:
+                    self._logger.warning(f"Failed to release held key '{key}': {e}")
+        except Exception as e:
+            self._logger.warning(f"Could not release held keys: {e}")
+        finally:
+            self._held_keys.clear()
 
     def _update_movement_baseline(self, x: int, y: int) -> None:
         """Reset the mouse-movement monitor's reference point.
@@ -453,6 +499,7 @@ class MacroEngine(QObject):
         if self._mouse_movement_service and self._mouse_movement_service.is_monitoring():
             self._mouse_movement_service.stop_monitoring()
 
+        self._release_held_keys()
         self._execution_state = ExecutionState.IDLE
         self._state.set(AppState.IDLE)
         self._state.set_current_macro(None)
@@ -478,6 +525,7 @@ class MacroEngine(QObject):
         # Stop the step timer and mouse monitoring so nothing keeps running
         # after the failure.
         self._delay_timer.stop()
+        self._release_held_keys()
         if self._mouse_movement_service and self._mouse_movement_service.is_monitoring():
             self._mouse_movement_service.stop_monitoring()
 

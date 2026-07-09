@@ -53,6 +53,7 @@ class MacroHotkeyService(QObject):
         self._event_bus: Optional[EventBus] = None
         self._registered_hotkeys: Dict[str, str] = {}  # hotkey_id -> macro_id
         self._macro_callbacks: Dict[str, Callable[[], None]] = {}  # macro_id -> callback
+        self._global_hotkeys: Dict[str, str] = {}  # kind ("stop"/"pause"/"resume") -> hotkey str
         
     def initialize(
         self,
@@ -185,12 +186,19 @@ class MacroHotkeyService(QObject):
     def register_global_hotkeys(self, hotkeys: HotkeySettings) -> None:
         """Register the global stop/pause/resume hotkeys with the engine.
 
+        Idempotent and safe to call again after the user changes hotkeys in
+        settings: any previously registered global bindings are unregistered
+        first so the new ones take effect live (no restart required).
+
         Args:
             hotkeys: Hotkey settings holding the global bindings.
         """
         if not self._hotkey_manager:
             self._logger.error("HotkeyManager not initialized")
             return
+
+        # Drop any previously-registered global bindings before re-registering.
+        self.unregister_global_hotkeys()
 
         bindings = [
             (hotkeys.stop_all, "stop"),
@@ -207,10 +215,25 @@ class MacroHotkeyService(QObject):
                     hotkey_id=f"global_{kind}",
                     callback=self._make_control_callback(kind),
                 )
+                self._global_hotkeys[kind] = hotkey
                 self._logger.info(f"Registered global '{kind}' hotkey: {hotkey}")
             except Exception as e:
                 # Most likely a conflict with a macro hotkey; log and continue.
                 self._logger.error(f"Failed to register global '{kind}' hotkey '{hotkey}': {e}")
+
+    def unregister_global_hotkeys(self) -> None:
+        """Unregister all currently-registered global stop/pause/resume hotkeys."""
+        if not self._hotkey_manager:
+            return
+
+        for kind, hotkey in list(self._global_hotkeys.items()):
+            try:
+                if self._hotkey_manager.is_registered(hotkey):
+                    self._hotkey_manager.unregister(hotkey)
+            except Exception as e:
+                self._logger.error(f"Failed to unregister global '{kind}' hotkey '{hotkey}': {e}")
+            finally:
+                self._global_hotkeys.pop(kind, None)
 
     def _make_control_callback(self, kind: str) -> Callable[[], None]:
         """Build a global-control callback that marshals to the main thread.

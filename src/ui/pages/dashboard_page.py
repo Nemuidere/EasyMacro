@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont
 from src.core.state import get_state_manager
 from src.core.event_bus import get_event_bus
 from src.core.config import ConfigManager
-from src.core.constants import DEFAULT_CONFIG_PATH
+from src.core.constants import get_config_path
 from src.core.exceptions import MacroNotFoundError
 from src.core.logger import get_logger
 from src.services.macro_service import get_macro_service
@@ -261,6 +261,7 @@ class DashboardPage(QWidget):
             event_bus.macro_started.connect(self._on_macro_started)
             event_bus.macro_stopped.connect(self._on_macro_stopped)
             event_bus.macro_saved.connect(self._on_macro_saved)
+            event_bus.settings_saved.connect(self._on_settings_saved)
         except RuntimeError:
             self._logger.warning("Event bus not initialized yet")
     
@@ -297,11 +298,20 @@ class DashboardPage(QWidget):
     
     def _on_macro_saved(self, macro) -> None:
         """Handle macro saved event.
-        
+
         Args:
             macro: The saved Macro object.
         """
         self._logger.debug(f"Macro saved: {macro.name}")
+        self._refresh_stats()
+
+    def _on_settings_saved(self, settings) -> None:
+        """Handle a settings save broadcast by refreshing the dashboard.
+
+        Args:
+            settings: The saved AppSettings (unused; we reload from disk).
+        """
+        self._logger.debug("Settings saved; refreshing dashboard")
         self._refresh_stats()
     
     def _update_running_status(self) -> None:
@@ -413,7 +423,7 @@ class DashboardPage(QWidget):
         # Add global hotkeys from AppSettings
         try:
             if self._config_manager is None:
-                self._config_manager = ConfigManager(DEFAULT_CONFIG_PATH)
+                self._config_manager = ConfigManager(get_config_path())
             settings = self._config_manager.load(AppSettings)
             
             # Global hotkeys header

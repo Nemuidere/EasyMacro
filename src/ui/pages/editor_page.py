@@ -402,13 +402,18 @@ class EditorPage(QWidget):
             self._show_error_dialog("Capture Failed", f"Service not initialized: {e}")
             return
 
-        # Minimize window
+        # Minimize the main window to get it out of the way. This fires this
+        # page's hideEvent; that handler deliberately keeps the capture alive
+        # while the window is minimized (see hideEvent).
         window = self.window()
         if window:
             window.showMinimized()
 
-        # Show instruction message
-        self._capture_message = QMessageBox(self)
+        # Show instruction message as an independent, always-on-top window so it
+        # stays visible above other applications while the main window is
+        # minimized. It has no parent on purpose (a child of the minimized main
+        # window would be hidden with it); we keep a reference so it isn't GC'd.
+        self._capture_message = QMessageBox()
         self._capture_message.setWindowTitle("Capture Position")
         self._capture_message.setText(
             f"Press {capture_key.upper()} to capture mouse position\n"
@@ -416,7 +421,10 @@ class EditorPage(QWidget):
             f"(Timeout in 30 seconds)"
         )
         self._capture_message.setStandardButtons(QMessageBox.NoButton)
+        self._capture_message.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self._capture_message.show()
+        self._capture_message.raise_()
+        self._capture_message.activateWindow()
 
     def _stop_capture(self) -> None:
         """Stop capture and cleanup."""
@@ -548,7 +556,7 @@ class EditorPage(QWidget):
             y=y,
             button=button,
             modifiers=self._modifiers,
-            jitter_radius=5,  # Default jitter
+            jitter_radius=2,  # Default jitter
             use_cursor_position=use_cursor_position
         )
         
@@ -780,9 +788,20 @@ class EditorPage(QWidget):
     def hideEvent(self, event) -> None:
         """Handle widget hide event.
 
-        Fired on every navigation away from this page. Only cancel any active
-        position capture here; keep the EventBus connections intact so capture
-        keeps working when the user navigates back.
+        Fired both on navigation away from this page AND when the app window is
+        minimized. During position capture we intentionally minimize the window,
+        so we must NOT tear the capture down in that case — otherwise the F2/Esc
+        listener and timeout would be killed the instant capture starts, leaving
+        the instruction window stuck with nothing driving it.
+
+        Discriminator: if the top-level window is minimized, this hide is our own
+        capture minimize; keep the capture alive. Otherwise the page is being
+        navigated away from, so cancel any active capture.
         """
+        window = self.window()
+        if window is not None and window.isMinimized():
+            super().hideEvent(event)
+            return
+
         self._stop_capture()
         super().hideEvent(event)

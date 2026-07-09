@@ -25,9 +25,16 @@ from src.services.stats_service import init_stats_service, get_stats_service
 from src.services.position_capture_service import init_position_capture_service
 from src.services.mouse_movement_service import init_mouse_movement_service, get_mouse_movement_service
 from src.services.macro_hotkey_service import init_macro_hotkey_service, get_macro_hotkey_service
-from src.core.macro_engine import init_macro_engine
+from src.core.macro_engine import init_macro_engine, get_macro_engine
 from src.core.randomization import get_randomization_engine
 from src.core.state import get_state_manager
+from src.core.constants import (
+    get_config_path,
+    get_macros_path,
+    get_stats_path,
+    get_log_path,
+    get_style_path,
+)
 from src.models.settings import AppSettings, RandomizationSettings
 
 
@@ -103,13 +110,13 @@ class Application(QObject):
     
     def _initialize_logging(self) -> None:
         """Initialize logging system."""
-        log_path = Path("data/logs/easymacro.log")
+        log_path = get_log_path()
         setup_logger("easymacro", log_path)
         self._logger = get_logger("app")
-    
+
     def _initialize_settings(self) -> None:
         """Initialize settings from config file."""
-        config_path = Path("data/config.json")
+        config_path = get_config_path()
         self._config_manager = ConfigManager(config_path)
         self._settings = self._config_manager.load(AppSettings)
     
@@ -129,7 +136,7 @@ class Application(QObject):
     
     def _initialize_services(self) -> None:
         """Initialize services."""
-        macros_path = Path("data/macros.json")
+        macros_path = get_macros_path()
         init_macro_service(macros_path)
 
         # Initialize AHK service - fails fast if AHK is not available
@@ -137,7 +144,7 @@ class Application(QObject):
         self._logger.info("AHK service initialized")
 
         # Initialize StatsService
-        stats_path = Path("data/stats.json")
+        stats_path = get_stats_path()
         init_stats_service(stats_path)
 
         # Initialize PositionCaptureService
@@ -223,19 +230,52 @@ class Application(QObject):
     
     def _apply_theme(self) -> None:
         """Apply the current theme."""
-        theme_path = Path("resources/styles/dark_theme.qss")
+        theme_path = get_style_path("dark_theme.qss")
         if theme_path.exists():
             stylesheet = theme_path.read_text()
             self._qt_app.setStyleSheet(stylesheet)
+        else:
+            self._logger.warning(f"Theme file not found: {theme_path}")
     
     def _connect_signals(self) -> None:
         """Connect application signals."""
         event_bus = get_event_bus()
-        
+
         event_bus.app_shutdown.connect(self._quit_app)
-        
+
+        # Apply settings live when saved (no restart required)
+        event_bus.settings_saved.connect(self._on_settings_saved)
+
         # Handle window close
         self._main_window.close_event.connect(self._on_window_close)
+
+    def _on_settings_saved(self, settings: AppSettings) -> None:
+        """Apply newly-saved settings to the running application.
+
+        Keeps the in-memory settings, the macro engine's safety options and the
+        global hotkey registrations in sync with what the user just saved, so
+        changes take effect without restarting.
+
+        Args:
+            settings: The saved AppSettings.
+        """
+        self._settings = settings
+
+        # Update the macro engine's mouse-movement safety options.
+        try:
+            engine = get_macro_engine()
+            engine.set_stop_on_mouse_movement(settings.stop_on_mouse_movement)
+            engine.set_mouse_movement_threshold(settings.mouse_movement_threshold)
+        except RuntimeError:
+            self._logger.warning("Macro engine not initialized; skipping live update")
+
+        # Re-register the global stop/pause/resume hotkeys (idempotent).
+        try:
+            get_macro_hotkey_service().register_global_hotkeys(settings.hotkeys)
+        except RuntimeError:
+            self._logger.warning("Macro hotkey service not initialized; skipping hotkey update")
+
+        self._logger.info("Applied saved settings to running application")
     
     def _show_window(self) -> None:
         """Show the main window."""

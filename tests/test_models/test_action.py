@@ -26,7 +26,7 @@ class TestClickAction:
         assert action.x == 100
         assert action.y == 200
         assert action.button == "left"
-        assert action.jitter_radius == 5
+        assert action.jitter_radius == 2
         assert action.action_type == ActionType.CLICK
     
     def test_create_click_action_with_custom_button(self):
@@ -57,7 +57,7 @@ class TestDelayAction:
         action = DelayAction(duration_ms=1000)
         
         assert action.duration_ms == 1000
-        assert action.variance_percent == 20
+        assert action.variance_percent == 5
         assert action.action_type == ActionType.DELAY
     
     def test_create_delay_action_with_custom_variance(self):

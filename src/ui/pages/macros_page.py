@@ -20,8 +20,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from src.services.macro_service import get_macro_service
-from src.models.macro import Macro
-from src.models.action import ClickAction, DelayAction
 
 
 class MacrosPage(QWidget):
@@ -133,23 +131,8 @@ class MacrosPage(QWidget):
             pass
     
     def _on_add_clicked(self) -> None:
-        """Handle add button click."""
-        # Create a simple macro for now
-        # TODO: Show macro editor dialog
-        try:
-            service = get_macro_service()
-            macro = Macro(
-                name="New Macro",
-                description="Click to edit",
-                actions=[
-                    ClickAction(x=100, y=100),
-                    DelayAction(duration_ms=500),
-                ]
-            )
-            service.save(macro)
-            self._load_macros()
-        except RuntimeError:
-            pass  # Service not initialized
+        """Handle add button click: open the macro builder for a new macro."""
+        self.create_macro_requested.emit()
     
     def _on_edit_clicked(self) -> None:
         """Handle edit button click."""

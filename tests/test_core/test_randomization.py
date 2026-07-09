@@ -20,8 +20,8 @@ class TestRandomizationEngine:
         engine = RandomizationEngine(settings)
         
         assert engine.is_enabled() is True
-        assert engine.get_jitter_radius() == 5
-        assert engine.get_timing_variance() == 20
+        assert engine.get_jitter_radius() == 2
+        assert engine.get_timing_variance() == 5
     
     def test_init_with_none_settings_raises_error(self):
         """Test initialization with None settings raises ValueError."""

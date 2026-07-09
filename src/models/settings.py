@@ -32,19 +32,19 @@ class RandomizationSettings(EasyMacroBaseModel):
     
     enabled: bool = Field(default=True, description="Enable randomization")
     jitter_radius: int = Field(
-        default=5,
+        default=2,
         ge=0,
         le=50,
         description="Maximum pixel offset for clicks"
     )
     timing_variance_percent: int = Field(
-        default=20,
+        default=5,
         ge=0,
         le=100,
         description="Percentage variance for delays"
     )
     mouse_speed_variation: int = Field(
-        default=10,
+        default=5,
         ge=0,
         le=50,
         description="Variation in mouse movement speed"

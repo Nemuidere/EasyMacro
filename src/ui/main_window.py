@@ -20,7 +20,7 @@ from PySide6.QtGui import QFont
 
 from src.ui.pages.dashboard_page import DashboardPage
 from src.ui.pages.macros_page import MacrosPage
-from src.ui.pages.editor_page import EditorPage
+from src.ui.pages.builder_page import MacroBuilderPage
 from src.ui.pages.settings_page import SettingsPage
 
 
@@ -154,9 +154,9 @@ class MainWindow(QMainWindow):
         macros = MacrosPage()
         self._add_page("macros", macros)
 
-        # Editor page
-        editor = EditorPage()
-        self._add_page("editor", editor)
+        # Macro builder page (multi-action editor; replaces the old editor)
+        builder = MacroBuilderPage()
+        self._add_page("builder", builder)
 
         # Settings page
         settings = SettingsPage()
@@ -177,23 +177,31 @@ class MainWindow(QMainWindow):
     
     def _connect_signals(self) -> None:
         """Connect internal signals."""
-        # Connect macros page to editor page
+        # Connect macros page to the builder page
         macros_page = self._pages.get("macros")
-        editor_page = self._pages.get("editor")
+        builder_page = self._pages.get("builder")
         settings_page = self._pages.get("settings")
         dashboard_page = self._pages.get("dashboard")
 
-        if macros_page and editor_page:
-            macros_page.create_macro_requested.connect(lambda: self._navigate_to("editor"))
+        if macros_page and builder_page:
+            macros_page.create_macro_requested.connect(self._on_create_macro_requested)
             macros_page.edit_macro_requested.connect(self._on_edit_macro_requested)
 
-            # Connect editor signals to navigate back to macros
-            editor_page.save_requested.connect(lambda: self._navigate_to("macros"))
-            editor_page.cancel_requested.connect(lambda: self._navigate_to("macros"))
+            # Returning from the builder goes back to the macros list.
+            builder_page.save_requested.connect(self._on_builder_finished)
+            builder_page.cancel_requested.connect(lambda: self._navigate_to("macros"))
 
         # Connect settings saved signal to refresh dashboard hotkeys
         if settings_page and dashboard_page:
             settings_page.settings_saved.connect(dashboard_page._refresh_hotkeys)
+
+    def _on_create_macro_requested(self) -> None:
+        """Open the builder for a brand-new macro."""
+        builder_page = self._pages.get("builder")
+        if not builder_page:
+            return
+        builder_page.reset()
+        self._navigate_to("builder")
 
     def _on_edit_macro_requested(self, macro_id: str) -> None:
         """Handle edit macro request.
@@ -201,12 +209,19 @@ class MainWindow(QMainWindow):
         Args:
             macro_id: ID of macro to edit.
         """
-        editor_page = self._pages.get("editor")
-        if not editor_page:
+        builder_page = self._pages.get("builder")
+        if not builder_page:
             return
 
-        editor_page.set_macro_id(macro_id)
-        self._navigate_to("editor")
+        builder_page.set_macro_id(macro_id)
+        self._navigate_to("builder")
+
+    def _on_builder_finished(self) -> None:
+        """After a save, refresh the macros list and return to it."""
+        macros_page = self._pages.get("macros")
+        if macros_page:
+            macros_page.refresh()
+        self._navigate_to("macros")
     
     def _navigate_to(self, page_id: str) -> None:
         """Navigate to a page.
@@ -220,8 +235,8 @@ class MainWindow(QMainWindow):
         if page_id not in self._pages:
             raise ValueError(f"Page not found: {page_id}")
         
-        # Update button states (skip for editor since it has no button)
-        if page_id != "editor":
+        # Update button states (skip for builder since it has no nav button)
+        if page_id != "builder":
             for pid, button in self._nav_buttons.items():
                 button.setChecked(pid == page_id)
         
