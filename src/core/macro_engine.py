@@ -308,7 +308,9 @@ class MacroEngine(QObject):
             if isinstance(action, DelayAction):
                 delay_ms = action.duration_ms
                 if self._current_macro.randomization_enabled:
-                    delay_ms = self._randomization.randomize_delay(action.duration_ms)
+                    delay_ms = self._randomization.randomize_delay(
+                        action.duration_ms, variance_percent=action.variance_percent
+                    )
 
                 self._logger.debug(f"Delay for {delay_ms:.0f}ms")
 
@@ -328,7 +330,16 @@ class MacroEngine(QObject):
 
             self._current_action_index += 1
             self.action_completed.emit(action.id)
-            self._schedule_step(0)
+
+            # Inline "delay after this step" set on the action itself.
+            next_delay_ms = 0
+            if action.delay_after_ms:
+                next_delay_ms = action.delay_after_ms
+                if self._current_macro.randomization_enabled:
+                    next_delay_ms = self._randomization.randomize_delay(
+                        action.delay_after_ms, variance_percent=action.delay_after_variance_percent
+                    )
+            self._schedule_step(next_delay_ms)
 
         except Exception as e:
             self._handle_error(str(e))

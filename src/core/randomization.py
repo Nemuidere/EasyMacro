@@ -4,7 +4,7 @@ Randomization engine for EasyMacro.
 Provides human-like randomization for macro actions using Gaussian distribution.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 import numpy as np
 
 from src.models.settings import RandomizationSettings
@@ -73,33 +73,38 @@ class RandomizationEngine:
         
         return (new_x, new_y)
     
-    def randomize_delay(self, base_ms: int) -> float:
+    def randomize_delay(self, base_ms: int, variance_percent: Optional[int] = None) -> float:
         """Randomize a delay using Gaussian distribution.
-        
-        The variance is calculated as a percentage of the base delay.
+
+        The variance is calculated as a percentage of the base delay. By
+        default this uses the global timing variance setting, but a caller
+        (e.g. a per-action variance field) can override it.
         Result is guaranteed to be non-negative.
-        
+
         Args:
             base_ms: Base delay in milliseconds.
-        
+            variance_percent: Variance percentage to use instead of the
+                global setting, if provided.
+
         Returns:
             Randomized delay in milliseconds (non-negative).
-        
+
         Raises:
             ValueError: If base_ms is negative.
         """
         if base_ms < 0:
             raise ValueError(f"Delay cannot be negative: {base_ms}")
-        
+
         if not self._settings.enabled:
             return float(base_ms)
-        
+
         # Calculate variance as percentage of base
-        variance_ms = base_ms * (self._settings.timing_variance_percent / 100.0)
-        
+        pct = variance_percent if variance_percent is not None else self._settings.timing_variance_percent
+        variance_ms = base_ms * (pct / 100.0)
+
         # Gaussian distribution
         randomized = self._rng.normal(base_ms, variance_ms)
-        
+
         # Ensure non-negative
         return max(0.0, randomized)
     

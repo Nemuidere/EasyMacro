@@ -2,9 +2,10 @@
 Logic tests for the Macro Builder page.
 
 These exercise the non-visual behaviour: assembling a mixed action list,
-the auto-delay interleave, reorder/duplicate/remove, and save/reload round-trip
-through the macro service. GUI-only concerns (dialog layout, live F2 capture)
-are covered by the physical checklist, not here.
+inline per-step delays, the realistic-movement transform, reorder/duplicate/
+remove, and save/reload round-trip through the macro service. GUI-only
+concerns (dialog layout, live F2 capture) are covered by the physical
+checklist, not here.
 """
 
 import pytest
@@ -92,21 +93,140 @@ def test_edit_loads_existing_actions(page, macro_service):
     assert len(fresh._actions) == 4
 
 
-def test_insert_delays_between_steps(page):
+def test_click_dialog_delay_after_round_trips(qapp):
+    d = ActionConfigDialog("click")
+    d._x_spin.setValue(10)
+    d._y_spin.setValue(20)
+    d._delay_after_check.setChecked(True)
+    d._delay_after_ms.setValue(300)
+    d._delay_after_variance.setValue(15)
+    d._on_accept()
+    action = d.result_action()
+
+    assert action.delay_after_ms == 300
+    assert action.delay_after_variance_percent == 15
+
+    reloaded = ActionConfigDialog("click", existing=action)
+    assert reloaded._delay_after_check.isChecked() is True
+    assert reloaded._delay_after_ms.value() == 300
+    assert reloaded._delay_after_variance.value() == 15
+
+
+def test_click_dialog_delay_after_defaults_to_zero_when_unchecked(qapp):
+    d = ActionConfigDialog("click")
+    d._x_spin.setValue(10)
+    d._y_spin.setValue(20)
+    d._on_accept()
+    action = d.result_action()
+
+    assert action.delay_after_ms == 0
+
+
+def test_summaries_show_delay_after_suffix():
+    action = ClickAction(x=1, y=2, delay_after_ms=250)
+    assert "+250ms delay" in summarize_action(action)
+    assert "+" not in summarize_action(ClickAction(x=1, y=2))
+
+
+def test_realistic_movement_inserts_moves_between_different_positions(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (7, True))
+
+    page.reset()
+    page._actions = [ClickAction(x=100, y=100), ClickAction(x=500, y=450)]
+    page._on_realistic_movement()
+
+    # A leading move to the first target, plus one between the two clicks.
+    assert len(page._actions) == 4
+    assert isinstance(page._actions[0], MouseMoveAction)
+    assert isinstance(page._actions[1], ClickAction)
+    assert isinstance(page._actions[2], MouseMoveAction)
+    assert (page._actions[2].x, page._actions[2].y) == (500, 450)
+    assert page._actions[2].speed == 7
+    assert isinstance(page._actions[3], ClickAction)
+
+
+def test_realistic_movement_skips_repeated_same_position(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+
+    page.reset()
+    page._actions = [ClickAction(x=100, y=100), ClickAction(x=100, y=100)]
+    page._on_realistic_movement()
+
+    # Leading move to the first target, but nothing inserted between the two
+    # identical-position clicks.
+    assert len(page._actions) == 3
+    assert isinstance(page._actions[0], MouseMoveAction)
+    assert isinstance(page._actions[1], ClickAction)
+    assert isinstance(page._actions[2], ClickAction)
+
+
+def test_realistic_movement_is_idempotent(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+
+    page.reset()
+    page._actions = [ClickAction(x=100, y=100), ClickAction(x=500, y=450)]
+    page._on_realistic_movement()
+    first_pass_len = len(page._actions)
+
+    page._on_realistic_movement()
+
+    assert len(page._actions) == first_pass_len
+
+
+def test_realistic_movement_recurses_into_loop_blocks(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+
+    page.reset()
+    page._actions = [LoopBlock(count=3, actions=[ClickAction(x=1, y=1), ClickAction(x=9, y=9)])]
+    page._on_realistic_movement()
+
+    block = page._actions[0]
+    assert isinstance(block, LoopBlock)
+    # A leading move into the loop body (each pass through the loop needs to
+    # travel back to the start), plus one between the two clicks.
+    assert len(block.actions) == 4
+    assert isinstance(block.actions[0], MouseMoveAction)
+    assert (block.actions[0].x, block.actions[0].y) == (1, 1)
+    assert isinstance(block.actions[1], ClickAction)
+    assert isinstance(block.actions[2], MouseMoveAction)
+    assert (block.actions[2].x, block.actions[2].y) == (9, 9)
+    assert isinstance(block.actions[3], ClickAction)
+
+
+def test_realistic_movement_skips_cursor_position_clicks(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+
     page.reset()
     page._actions = [
-        ClickAction(x=1, y=1),
-        ClickAction(x=2, y=2),
-        ClickAction(x=3, y=3),
+        ClickAction(x=0, y=0, use_cursor_position=True),
+        ClickAction(x=200, y=200),
     ]
-    page._auto_delay_spin.setValue(250)
-    page._on_insert_delays()
+    page._on_realistic_movement()
 
-    # click, delay, click, delay, click
-    assert len(page._actions) == 5
-    assert isinstance(page._actions[1], DelayAction)
-    assert isinstance(page._actions[3], DelayAction)
-    assert page._actions[1].duration_ms == 250
+    # No move before the cursor-position click (its target is unknown); one
+    # gets inserted before the fixed-position click that follows.
+    assert len(page._actions) == 3
+    assert isinstance(page._actions[0], ClickAction)
+    assert page._actions[0].use_cursor_position is True
+    assert isinstance(page._actions[1], MouseMoveAction)
+    assert isinstance(page._actions[2], ClickAction)
+
+
+def test_realistic_movement_requires_actions(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    called = []
+    monkeypatch.setattr(bm.QMessageBox, "information", lambda *a, **k: called.append(True))
+
+    page.reset()
+    page._on_realistic_movement()
+
+    assert called == [True]
+    assert page._actions == []
 
 
 def test_reorder_and_remove(page):

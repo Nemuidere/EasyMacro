@@ -27,7 +27,7 @@ class ActionType(str, Enum):
 
 class ClickAction(EasyMacroBaseModel):
     """Action for mouse clicks.
-    
+
     Attributes:
         action_type: Always ActionType.CLICK.
         x: X coordinate (ignored if use_cursor_position is True).
@@ -36,8 +36,11 @@ class ClickAction(EasyMacroBaseModel):
         modifiers: Modifier keys to hold during click.
         jitter_radius: Randomization radius in pixels.
         use_cursor_position: If True, use current cursor position instead of x,y.
+        delay_after_ms: Optional delay after this action completes, before the
+            next step runs (0 = none).
+        delay_after_variance_percent: Randomization variance for delay_after_ms.
     """
-    
+
     action_type: ActionType = Field(default=ActionType.CLICK, frozen=True)
     x: int = Field(ge=0, description="X coordinate")
     y: int = Field(ge=0, description="Y coordinate")
@@ -45,7 +48,11 @@ class ClickAction(EasyMacroBaseModel):
     modifiers: list[str] = Field(default_factory=list, description="Modifier keys to hold during click")
     jitter_radius: int = Field(default=2, ge=0, description="Randomization radius in pixels")
     use_cursor_position: bool = Field(default=False, description="Use current cursor position")
-    
+    delay_after_ms: int = Field(default=0, ge=0, description="Optional delay after this action completes")
+    delay_after_variance_percent: int = Field(
+        default=5, ge=0, le=100, description="Randomization variance for delay_after_ms"
+    )
+
     @field_validator("button")
     @classmethod
     def validate_button(cls, v: str) -> str:
@@ -107,17 +114,24 @@ class DelayAction(EasyMacroBaseModel):
 
 class KeyPressAction(EasyMacroBaseModel):
     """Action for key presses.
-    
+
     Attributes:
         action_type: Always ActionType.KEY_PRESS.
         key: Key to press.
         modifiers: Modifier keys (ctrl, alt, shift).
+        delay_after_ms: Optional delay after this action completes, before the
+            next step runs (0 = none).
+        delay_after_variance_percent: Randomization variance for delay_after_ms.
     """
-    
+
     action_type: ActionType = Field(default=ActionType.KEY_PRESS, frozen=True)
     key: str = Field(min_length=1, description="Key to press")
     modifiers: list[str] = Field(default_factory=list, description="Modifier keys")
-    
+    delay_after_ms: int = Field(default=0, ge=0, description="Optional delay after this action completes")
+    delay_after_variance_percent: int = Field(
+        default=5, ge=0, le=100, description="Randomization variance for delay_after_ms"
+    )
+
     @field_validator("modifiers")
     @classmethod
     def validate_modifiers(cls, v: list[str]) -> list[str]:
@@ -141,20 +155,27 @@ class KeyPressAction(EasyMacroBaseModel):
 
 class MouseMoveAction(EasyMacroBaseModel):
     """Action for mouse movement.
-    
+
     Attributes:
         action_type: Always ActionType.MOUSE_MOVE.
         x: Target X coordinate.
         y: Target Y coordinate.
         smooth: Whether to use smooth movement.
         speed: Movement speed (1-10).
+        delay_after_ms: Optional delay after this action completes, before the
+            next step runs (0 = none).
+        delay_after_variance_percent: Randomization variance for delay_after_ms.
     """
-    
+
     action_type: ActionType = Field(default=ActionType.MOUSE_MOVE, frozen=True)
     x: int = Field(ge=0, description="Target X coordinate")
     y: int = Field(ge=0, description="Target Y coordinate")
     smooth: bool = Field(default=True, description="Use smooth movement")
     speed: int = Field(default=5, ge=1, le=10, description="Movement speed (1-10)")
+    delay_after_ms: int = Field(default=0, ge=0, description="Optional delay after this action completes")
+    delay_after_variance_percent: int = Field(
+        default=5, ge=0, le=100, description="Randomization variance for delay_after_ms"
+    )
 
 
 # Union type for all executable (leaf) actions

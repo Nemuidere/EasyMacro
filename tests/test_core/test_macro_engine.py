@@ -406,3 +406,83 @@ def test_jitter_keeps_click_near_target(qapp, initialized_event_bus, monkeypatch
     # 10 standard deviations — a false failure is astronomically unlikely.
     assert 480 <= x <= 520
     assert 480 <= y <= 520
+
+
+# ---------------------------------------------------------------------------
+# Inline "delay after this step" and per-action delay variance.
+# ---------------------------------------------------------------------------
+
+def test_click_delay_after_ms_delays_next_step(make_engine):
+    engine, ahk, state = make_engine()
+    macro = _macro(
+        [ClickAction(x=1, y=1, delay_after_ms=150), ClickAction(x=2, y=2)],
+        repeat_count=1,
+    )
+
+    engine.run_macro(macro)
+    QTest.qWait(30)
+    assert ahk.click.call_count == 1
+
+    # Still within the delay_after_ms window — second click hasn't fired yet.
+    QTest.qWait(60)
+    assert ahk.click.call_count == 1
+
+    # After delay_after_ms elapses, the second click fires.
+    QTest.qWait(150)
+    assert ahk.click.call_count == 2
+
+
+def test_action_without_delay_after_schedules_next_step_immediately(make_engine):
+    engine, ahk, state = make_engine()
+    macro = _macro([ClickAction(x=1, y=1), ClickAction(x=2, y=2)], repeat_count=1)
+
+    engine.run_macro(macro)
+    QTest.qWait(50)
+
+    assert ahk.click.call_count == 2
+
+
+def test_delay_action_variance_percent_is_used(make_engine, monkeypatch):
+    """Regression: DelayAction.variance_percent used to be accepted but never
+    actually consulted by the engine (it always used the global setting)."""
+    engine, ahk, state = make_engine()
+    captured = {}
+
+    def fake_randomize_delay(base_ms, variance_percent=None):
+        captured["variance_percent"] = variance_percent
+        return base_ms
+
+    monkeypatch.setattr(engine._randomization, "randomize_delay", fake_randomize_delay)
+
+    macro = Macro(
+        name="Variance",
+        actions=[DelayAction(duration_ms=1000, variance_percent=33)],
+        repeat_count=1,
+        randomization_enabled=True,
+    )
+    engine.run_macro(macro)
+    QTest.qWait(80)
+
+    assert captured["variance_percent"] == 33
+
+
+def test_click_delay_after_variance_percent_is_used(make_engine, monkeypatch):
+    engine, ahk, state = make_engine()
+    captured = {}
+
+    def fake_randomize_delay(base_ms, variance_percent=None):
+        captured["variance_percent"] = variance_percent
+        return base_ms
+
+    monkeypatch.setattr(engine._randomization, "randomize_delay", fake_randomize_delay)
+
+    macro = Macro(
+        name="Variance",
+        actions=[ClickAction(x=1, y=1, delay_after_ms=100, delay_after_variance_percent=42)],
+        repeat_count=1,
+        randomization_enabled=True,
+    )
+    engine.run_macro(macro)
+    QTest.qWait(80)
+
+    assert captured["variance_percent"] == 42

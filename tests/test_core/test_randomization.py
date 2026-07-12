@@ -93,9 +93,50 @@ class TestRandomizationEngine:
     def test_randomize_delay_negative_raises_error(self, randomization_settings):
         """Test that negative delay raises ValueError."""
         engine = RandomizationEngine(randomization_settings)
-        
+
         with pytest.raises(ValueError, match="Delay cannot be negative"):
             engine.randomize_delay(-1)
+
+    def test_randomize_delay_uses_variance_override(self, monkeypatch):
+        """Test that a per-call variance_percent overrides the global setting."""
+        settings = RandomizationSettings(enabled=True, timing_variance_percent=5)
+        engine = RandomizationEngine(settings)
+
+        # numpy's Generator is a C-level object whose methods can't be patched
+        # in place, so swap out the whole `_rng` attribute for a stand-in.
+        captured = {}
+
+        class _FakeRng:
+            def normal(self, mean, std):
+                captured["mean"] = mean
+                captured["std"] = std
+                return mean
+
+        monkeypatch.setattr(engine, "_rng", _FakeRng())
+
+        engine.randomize_delay(1000, variance_percent=50)
+
+        assert captured["mean"] == 1000
+        assert captured["std"] == 500  # 50% of 1000, not the global 5%
+
+    def test_randomize_delay_without_override_uses_global_setting(self, monkeypatch):
+        """Test that omitting variance_percent falls back to the global setting."""
+        settings = RandomizationSettings(enabled=True, timing_variance_percent=5)
+        engine = RandomizationEngine(settings)
+
+        captured = {}
+
+        class _FakeRng:
+            def normal(self, mean, std):
+                captured["mean"] = mean
+                captured["std"] = std
+                return mean
+
+        monkeypatch.setattr(engine, "_rng", _FakeRng())
+
+        engine.randomize_delay(1000)
+
+        assert captured["std"] == 50  # 5% of 1000
     
     def test_randomize_speed_in_range(self, randomization_settings):
         """Test that randomized speed is always in valid range."""

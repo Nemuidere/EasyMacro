@@ -44,9 +44,33 @@ class TestClickAction:
         """Test that negative coordinates raise ValueError."""
         with pytest.raises(ValueError):
             ClickAction(x=-1, y=200)
-        
+
         with pytest.raises(ValueError):
             ClickAction(x=100, y=-1)
+
+    def test_delay_after_defaults_to_none(self):
+        """Test that inline post-action delay defaults to off."""
+        action = ClickAction(x=100, y=200)
+
+        assert action.delay_after_ms == 0
+        assert action.delay_after_variance_percent == 5
+
+    def test_delay_after_can_be_set(self):
+        """Test that inline post-action delay can be configured."""
+        action = ClickAction(x=100, y=200, delay_after_ms=250, delay_after_variance_percent=20)
+
+        assert action.delay_after_ms == 250
+        assert action.delay_after_variance_percent == 20
+
+    def test_delay_after_negative_raises_error(self):
+        """Test that a negative inline delay raises ValueError."""
+        with pytest.raises(ValueError):
+            ClickAction(x=100, y=200, delay_after_ms=-1)
+
+    def test_delay_after_variance_out_of_range_raises_error(self):
+        """Test that an out-of-range inline delay variance raises ValueError."""
+        with pytest.raises(ValueError):
+            ClickAction(x=100, y=200, delay_after_variance_percent=101)
 
 
 class TestDelayAction:
@@ -104,6 +128,13 @@ class TestKeyPressAction:
         with pytest.raises(ValueError):
             KeyPressAction(key="")
 
+    def test_delay_after_defaults_to_none(self):
+        """Test that inline post-action delay defaults to off."""
+        action = KeyPressAction(key="a")
+
+        assert action.delay_after_ms == 0
+        assert action.delay_after_variance_percent == 5
+
 
 class TestMouseMoveAction:
     """Tests for MouseMoveAction model."""
@@ -128,9 +159,16 @@ class TestMouseMoveAction:
         """Test that invalid speed raises ValueError."""
         with pytest.raises(ValueError):
             MouseMoveAction(x=100, y=200, speed=0)
-        
+
         with pytest.raises(ValueError):
             MouseMoveAction(x=100, y=200, speed=11)
+
+    def test_delay_after_defaults_to_none(self):
+        """Test that inline post-action delay defaults to off."""
+        action = MouseMoveAction(x=100, y=200)
+
+        assert action.delay_after_ms == 0
+        assert action.delay_after_variance_percent == 5
 
 
 class TestParseAction:

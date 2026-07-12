@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QFormLayout,
     QLabel,
     QPushButton,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QInputDialog,
     QAbstractItemView,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -163,19 +165,26 @@ def summarize_action(action: Action) -> str:
         else:
             verb = f"{action.button.capitalize()}-click"
         where = "cursor pos" if action.use_cursor_position else f"({action.x}, {action.y})"
-        return f"{verb} @ {where}"
-    if isinstance(action, MouseMoveAction):
-        return f"Move to ({action.x}, {action.y}) · speed {action.speed}"
-    if isinstance(action, KeyPressAction):
+        base = f"{verb} @ {where}"
+    elif isinstance(action, MouseMoveAction):
+        base = f"Move to ({action.x}, {action.y}) · speed {action.speed}"
+    elif isinstance(action, KeyPressAction):
         if action.action_type == ActionType.KEY_HOLD:
-            return f"Hold key '{action.key}'"
-        if action.action_type == ActionType.KEY_RELEASE:
-            return f"Release key '{action.key}'"
-        combo = "+".join(list(action.modifiers) + [action.key]) if action.modifiers else action.key
-        return f"Press '{combo}'"
-    if isinstance(action, DelayAction):
+            base = f"Hold key '{action.key}'"
+        elif action.action_type == ActionType.KEY_RELEASE:
+            base = f"Release key '{action.key}'"
+        else:
+            combo = "+".join(list(action.modifiers) + [action.key]) if action.modifiers else action.key
+            base = f"Press '{combo}'"
+    elif isinstance(action, DelayAction):
         return f"Delay {action.duration_ms} ms"
-    return "Unknown action"
+    else:
+        return "Unknown action"
+
+    delay_after = getattr(action, "delay_after_ms", 0)
+    if delay_after:
+        base += f"  ·  +{delay_after}ms delay"
+    return base
 
 
 def summarize_item(item) -> str:
@@ -232,6 +241,8 @@ class ActionConfigDialog(QDialog):
             self._build_key_fields(form)
         if self._kind == "delay":
             self._build_delay_fields(form)
+        if self._kind != "delay":
+            self._build_delay_after_fields(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_accept)
@@ -322,6 +333,32 @@ class ActionConfigDialog(QDialog):
         self._duration_spin.setSuffix(" ms")
         form.addRow("Duration:", self._duration_spin)
 
+    def _build_delay_after_fields(self, form: QFormLayout) -> None:
+        """Optional delay after this action completes, before the next step.
+
+        Lets a step (click/move/key) carry its own trailing delay instead of
+        always needing a separate standalone Delay step after it.
+        """
+        self._delay_after_check = QCheckBox("Add delay after this step")
+        form.addRow(self._delay_after_check)
+
+        self._delay_after_ms = QSpinBox()
+        self._delay_after_ms.setRange(0, 3600000)
+        self._delay_after_ms.setValue(0)
+        self._delay_after_ms.setSuffix(" ms")
+        self._delay_after_ms.setEnabled(False)
+        form.addRow("Delay duration:", self._delay_after_ms)
+
+        self._delay_after_variance = QSpinBox()
+        self._delay_after_variance.setRange(0, 100)
+        self._delay_after_variance.setValue(5)
+        self._delay_after_variance.setSuffix(" %")
+        self._delay_after_variance.setEnabled(False)
+        form.addRow("Delay variance:", self._delay_after_variance)
+
+        self._delay_after_check.toggled.connect(self._delay_after_ms.setEnabled)
+        self._delay_after_check.toggled.connect(self._delay_after_variance.setEnabled)
+
     # -- load existing ------------------------------------------------------
 
     def _load_existing(self, action: Action) -> None:
@@ -345,6 +382,13 @@ class ActionConfigDialog(QDialog):
                 cb.setChecked(mod in action.modifiers)
         elif isinstance(action, DelayAction):
             self._duration_spin.setValue(action.duration_ms)
+
+        if self._kind != "delay":
+            delay_after = getattr(action, "delay_after_ms", 0)
+            if delay_after:
+                self._delay_after_check.setChecked(True)
+                self._delay_after_ms.setValue(delay_after)
+                self._delay_after_variance.setValue(getattr(action, "delay_after_variance_percent", 5))
 
     # -- position capture ---------------------------------------------------
 
@@ -388,6 +432,12 @@ class ActionConfigDialog(QDialog):
         super().reject()
 
     def _build_action(self) -> Action:
+        if self._kind == "delay":
+            return DelayAction(duration_ms=self._duration_spin.value())
+
+        delay_after_ms = self._delay_after_ms.value() if self._delay_after_check.isChecked() else 0
+        delay_after_variance = self._delay_after_variance.value()
+
         if self._kind == "click":
             use_cursor = self._cursor_check.isChecked()
             action_type = ActionType.DOUBLE_CLICK if self._double_check.isChecked() else ActionType.CLICK
@@ -397,6 +447,8 @@ class ActionConfigDialog(QDialog):
                 button=self._button_combo.currentText(),
                 use_cursor_position=use_cursor,
                 action_type=action_type,
+                delay_after_ms=delay_after_ms,
+                delay_after_variance_percent=delay_after_variance,
             )
         if self._kind == "move":
             return MouseMoveAction(
@@ -404,6 +456,8 @@ class ActionConfigDialog(QDialog):
                 y=self._y_spin.value(),
                 speed=self._speed_spin.value(),
                 smooth=self._smooth_check.isChecked(),
+                delay_after_ms=delay_after_ms,
+                delay_after_variance_percent=delay_after_variance,
             )
         if self._kind in ("key_press", "key_hold", "key_release"):
             key = self._key_capture.key().strip()
@@ -416,9 +470,13 @@ class ActionConfigDialog(QDialog):
                 action_type = ActionType.KEY_HOLD
             else:
                 action_type = ActionType.KEY_RELEASE
-            return KeyPressAction(key=key, modifiers=mods, action_type=action_type)
-        if self._kind == "delay":
-            return DelayAction(duration_ms=self._duration_spin.value())
+            return KeyPressAction(
+                key=key,
+                modifiers=mods,
+                action_type=action_type,
+                delay_after_ms=delay_after_ms,
+                delay_after_variance_percent=delay_after_variance,
+            )
         raise ValueError(f"Unknown action kind: {self._kind}")
 
     def result_action(self) -> Optional[Action]:
@@ -469,7 +527,22 @@ class MacroBuilderPage(QWidget):
     # -- UI -----------------------------------------------------------------
 
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        # Outer layout just hosts a scroll area (so the content never gets
+        # squeezed/overlapped on a short window) plus the save/cancel row
+        # pinned below it, always visible without scrolling.
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+
+        content_widget = QWidget()
+        content_widget.setObjectName("builderContent")
+
+        layout = QVBoxLayout(content_widget)
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(16)
 
@@ -492,6 +565,9 @@ class MacroBuilderPage(QWidget):
         self._action_list.setObjectName("actionList")
         list_row.addWidget(self._action_list, 1)
 
+        # Side controls: a compact 2-column grid instead of one tall stack of
+        # buttons, so the panel needs roughly half the vertical space (the
+        # scroll area above is the safety net for whatever's left over).
         side = QVBoxLayout()
         self._add_type_combo = QComboBox()
         for kind, label in ACTION_KINDS:
@@ -508,16 +584,20 @@ class MacroBuilderPage(QWidget):
         self._dup_btn = QPushButton("Duplicate")
         self._remove_btn = QPushButton("Remove")
         self._remove_btn.setObjectName("dangerButton")
-        for b in (self._up_btn, self._down_btn, self._dup_btn, self._remove_btn):
-            side.addWidget(b)
-
-        side.addSpacing(10)
         # Loop controls: select one or more contiguous rows, then "Loop …" wraps
         # them into a repeat block; "Ungroup" expands a loop back to its steps.
         self._loop_btn = QPushButton("Loop selected…")
         self._ungroup_btn = QPushButton("Ungroup loop")
-        side.addWidget(self._loop_btn)
-        side.addWidget(self._ungroup_btn)
+
+        button_grid = QGridLayout()
+        button_grid.setSpacing(8)
+        button_grid.addWidget(self._up_btn, 0, 0)
+        button_grid.addWidget(self._down_btn, 0, 1)
+        button_grid.addWidget(self._dup_btn, 1, 0)
+        button_grid.addWidget(self._remove_btn, 1, 1)
+        button_grid.addWidget(self._loop_btn, 2, 0)
+        button_grid.addWidget(self._ungroup_btn, 2, 1)
+        side.addLayout(button_grid)
         side.addStretch()
 
         # Allow selecting a contiguous range to group into a loop.
@@ -525,18 +605,13 @@ class MacroBuilderPage(QWidget):
         list_row.addLayout(side)
         layout.addLayout(list_row, 1)
 
-        # Auto-delay between steps
-        autodelay_row = QHBoxLayout()
-        autodelay_row.addWidget(QLabel("Insert delay between all steps:"))
-        self._auto_delay_spin = QSpinBox()
-        self._auto_delay_spin.setRange(0, 3600000)
-        self._auto_delay_spin.setValue(0)
-        self._auto_delay_spin.setSuffix(" ms")
-        autodelay_row.addWidget(self._auto_delay_spin)
-        self._insert_delays_btn = QPushButton("Insert")
-        autodelay_row.addWidget(self._insert_delays_btn)
-        autodelay_row.addStretch()
-        layout.addLayout(autodelay_row)
+        # Realistic movement: one-shot transform that inserts mouse-move steps
+        # before position changes, so the cursor travels instead of teleporting.
+        realistic_row = QHBoxLayout()
+        self._realistic_btn = QPushButton("Add realistic movement")
+        realistic_row.addWidget(self._realistic_btn)
+        realistic_row.addStretch()
+        layout.addLayout(realistic_row)
 
         # Options: repeat, randomization, hotkey
         options_group = QGroupBox("Options")
@@ -567,15 +642,20 @@ class MacroBuilderPage(QWidget):
 
         layout.addWidget(options_group)
 
-        # Save / cancel
+        scroll_area.setWidget(content_widget)
+        outer_layout.addWidget(scroll_area)
+
+        # Save / cancel — pinned outside the scroll area so it's always
+        # visible without needing to scroll down to it.
         btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(30, 12, 30, 20)
         btn_row.addStretch()
         self._cancel_btn = QPushButton("Cancel")
         self._save_btn = QPushButton("Save")
         self._save_btn.setObjectName("primaryButton")
         btn_row.addWidget(self._cancel_btn)
         btn_row.addWidget(self._save_btn)
-        layout.addLayout(btn_row)
+        outer_layout.addLayout(btn_row)
 
     def _connect_signals(self) -> None:
         self._add_btn.clicked.connect(self._on_add)
@@ -584,7 +664,7 @@ class MacroBuilderPage(QWidget):
         self._down_btn.clicked.connect(lambda: self._move(1))
         self._dup_btn.clicked.connect(self._on_duplicate)
         self._remove_btn.clicked.connect(self._on_remove)
-        self._insert_delays_btn.clicked.connect(self._on_insert_delays)
+        self._realistic_btn.clicked.connect(self._on_realistic_movement)
         self._loop_btn.clicked.connect(self._on_loop_selected)
         self._ungroup_btn.clicked.connect(self._on_ungroup)
         self._loop_check.toggled.connect(lambda looped: self._repeat_spin.setEnabled(not looped))
@@ -716,18 +796,69 @@ class MacroBuilderPage(QWidget):
         self._actions.pop(idx)
         self._refresh_list(select_index=min(idx, len(self._actions) - 1))
 
-    def _on_insert_delays(self) -> None:
-        """Interleave a delay of the configured duration between every step."""
-        duration = self._auto_delay_spin.value()
-        if duration <= 0 or len(self._actions) < 2:
+    def _on_realistic_movement(self) -> None:
+        """Insert mouse-move steps before position changes.
+
+        Prompts once for a move speed, then walks the action list (recursing
+        into loop blocks) inserting a MouseMoveAction before any fixed-position
+        Click/Move whose target differs from the last known cursor position —
+        so the cursor visibly travels there instead of teleporting.
+        """
+        if not self._actions:
+            QMessageBox.information(self, "Realistic movement", "Add some steps first.")
             return
-        interleaved: List[Action] = []
-        for i, action in enumerate(self._actions):
-            interleaved.append(action)
-            if i < len(self._actions) - 1:
-                interleaved.append(DelayAction(duration_ms=duration))
-        self._actions = interleaved
+        speed, ok = QInputDialog.getInt(
+            self, "Realistic movement", "Move speed for inserted steps (1-10):", 5, 1, 10
+        )
+        if not ok:
+            return
+        self._actions, _ = self._insert_realistic_moves(self._actions, speed)
         self._refresh_list()
+
+    @staticmethod
+    def _position_of(item) -> Optional[tuple]:
+        """The static (x, y) an action targets, or None if it can't be known
+        ahead of time (e.g. a cursor-position click, a key press, a delay)."""
+        if isinstance(item, MouseMoveAction):
+            return (item.x, item.y)
+        if isinstance(item, ClickAction) and not item.use_cursor_position:
+            return (item.x, item.y)
+        return None
+
+    def _insert_realistic_moves(
+        self, items: List, speed: int, last_pos: Optional[tuple] = None
+    ) -> tuple:
+        """Return (new_items, last_pos) with realistic moves inserted.
+
+        ``last_pos`` tracks the cursor's last known static position as the
+        list is walked, so a second run (or a loop body) doesn't insert
+        duplicate/no-op moves.
+        """
+        result: List = []
+        for item in items:
+            if isinstance(item, LoopBlock):
+                item.actions, last_pos = self._insert_realistic_moves(item.actions, speed, last_pos)
+                result.append(item)
+                continue
+
+            target = self._position_of(item)
+            # Never insert a move immediately before an item that's already a
+            # MouseMoveAction — it already *is* the travel step, so a second
+            # move to the same spot ahead of it is always redundant. This is
+            # what makes the transform idempotent on repeat runs.
+            if target is not None and target != last_pos and not isinstance(item, MouseMoveAction):
+                result.append(MouseMoveAction(x=target[0], y=target[1], speed=speed, smooth=True))
+            result.append(item)
+
+            if isinstance(item, ClickAction) and item.use_cursor_position:
+                # Cursor-position clicks don't move the mouse, but we can't
+                # know at build time where it'll actually be at run time.
+                last_pos = None
+            elif target is not None:
+                last_pos = target
+            # Key press/hold/release and delay actions don't change position.
+
+        return result, last_pos
 
     # -- load / save --------------------------------------------------------
 
@@ -741,7 +872,6 @@ class MacroBuilderPage(QWidget):
         self._repeat_spin.setValue(1)
         self._repeat_delay_spin.setValue(0)
         self._random_check.setChecked(True)
-        self._auto_delay_spin.setValue(0)
         self._hotkey_input.set_hotkey("")
         self._refresh_list()
 
