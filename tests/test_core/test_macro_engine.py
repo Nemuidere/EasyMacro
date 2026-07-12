@@ -369,6 +369,24 @@ def test_mixed_loop_and_plain_actions(make_engine):
     assert ahk.click.call_count == 4
 
 
+def test_nested_loop_blocks_execute_correct_click_count(make_engine):
+    engine, ahk, state = make_engine()
+    inner = LoopBlock(count=25, actions=[ClickAction(x=1, y=1)])
+    outer = LoopBlock(count=10, actions=[ClickAction(x=2, y=2), inner])
+    macro = Macro(
+        name="Nested",
+        actions=[outer, ClickAction(x=3, y=3)],
+        repeat_count=1,
+        randomization_enabled=False,
+    )
+    engine.run_macro(macro)
+    QTest.qWait(200)
+
+    # outer runs 10x: each pass is click(2,2) + inner's 25 clicks = 26 clicks,
+    # plus 1 trailing click outside the loop.
+    assert ahk.click.call_count == 10 * 26 + 1
+
+
 def test_outer_repeat_wraps_loop_blocks(make_engine):
     engine, ahk, state = make_engine()
     macro = Macro(

@@ -129,8 +129,7 @@ def test_summaries_show_delay_after_suffix():
 
 
 def test_realistic_movement_inserts_moves_between_different_positions(page, monkeypatch):
-    import src.ui.pages.builder_page as bm
-    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (7, True))
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (7, False))
 
     page.reset()
     page._actions = [ClickAction(x=100, y=100), ClickAction(x=500, y=450)]
@@ -147,8 +146,7 @@ def test_realistic_movement_inserts_moves_between_different_positions(page, monk
 
 
 def test_realistic_movement_skips_repeated_same_position(page, monkeypatch):
-    import src.ui.pages.builder_page as bm
-    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, False))
 
     page.reset()
     page._actions = [ClickAction(x=100, y=100), ClickAction(x=100, y=100)]
@@ -163,8 +161,7 @@ def test_realistic_movement_skips_repeated_same_position(page, monkeypatch):
 
 
 def test_realistic_movement_is_idempotent(page, monkeypatch):
-    import src.ui.pages.builder_page as bm
-    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, False))
 
     page.reset()
     page._actions = [ClickAction(x=100, y=100), ClickAction(x=500, y=450)]
@@ -177,8 +174,7 @@ def test_realistic_movement_is_idempotent(page, monkeypatch):
 
 
 def test_realistic_movement_recurses_into_loop_blocks(page, monkeypatch):
-    import src.ui.pages.builder_page as bm
-    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, False))
 
     page.reset()
     page._actions = [LoopBlock(count=3, actions=[ClickAction(x=1, y=1), ClickAction(x=9, y=9)])]
@@ -198,8 +194,7 @@ def test_realistic_movement_recurses_into_loop_blocks(page, monkeypatch):
 
 
 def test_realistic_movement_skips_cursor_position_clicks(page, monkeypatch):
-    import src.ui.pages.builder_page as bm
-    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, False))
 
     page.reset()
     page._actions = [
@@ -229,17 +224,96 @@ def test_realistic_movement_requires_actions(page, monkeypatch):
     assert page._actions == []
 
 
+def test_realistic_movement_account_for_loop_connects_macro_ends(page, monkeypatch):
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, True))
+
+    page.reset()
+    page._loop_check.setChecked(True)  # "Loop until stopped" -> macro repeats
+    page._actions = [ClickAction(x=100, y=100), ClickAction(x=500, y=500)]
+
+    page._on_realistic_movement()
+
+    last = page._actions[-1]
+    assert isinstance(last, MouseMoveAction)
+    assert (last.x, last.y) == (100, 100)
+
+
+def test_realistic_movement_account_for_loop_connects_nested_loop_ends(page, monkeypatch):
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, True))
+
+    page.reset()
+    page._loop_check.setChecked(False)
+    page._repeat_spin.setValue(1)  # macro itself runs once -> no macro-level connector
+    page._actions = [
+        LoopBlock(count=25, actions=[ClickAction(x=1, y=1), ClickAction(x=9, y=9)]),
+    ]
+
+    page._on_realistic_movement()
+
+    block = page._actions[0]
+    last_in_loop = block.actions[-1]
+    assert isinstance(last_in_loop, MouseMoveAction)
+    assert (last_in_loop.x, last_in_loop.y) == (1, 1)
+    # No macro-level connector appended after the loop (single run).
+    assert len(page._actions) == 1
+
+
+def test_realistic_movement_account_for_loop_skips_single_run_macro(page, monkeypatch):
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, True))
+
+    page.reset()
+    page._loop_check.setChecked(False)
+    page._repeat_spin.setValue(1)
+    page._actions = [ClickAction(x=100, y=100), ClickAction(x=500, y=500)]
+
+    page._on_realistic_movement()
+
+    # Macro runs once — nothing to connect back to.
+    last = page._actions[-1]
+    assert isinstance(last, ClickAction)
+
+
+def test_realistic_movement_account_for_loop_skips_a_loop_that_runs_once(page, monkeypatch):
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, True))
+
+    page.reset()
+    page._loop_check.setChecked(False)
+    page._repeat_spin.setValue(1)
+    page._actions = [LoopBlock(count=1, actions=[ClickAction(x=1, y=1), ClickAction(x=9, y=9)])]
+
+    page._on_realistic_movement()
+
+    block = page._actions[0]
+    # count=1 never wraps around, so no connector inside the loop body either.
+    assert isinstance(block.actions[-1], ClickAction)
+
+
+def test_realistic_movement_account_for_loop_is_idempotent(page, monkeypatch):
+    monkeypatch.setattr(page, "_prompt_realistic_movement_options", lambda: (5, True))
+
+    page.reset()
+    page._loop_check.setChecked(True)
+    page._actions = [ClickAction(x=100, y=100), ClickAction(x=500, y=500)]
+
+    page._on_realistic_movement()
+    first_pass_len = len(page._actions)
+
+    page._on_realistic_movement()
+
+    assert len(page._actions) == first_pass_len
+
+
 def test_reorder_and_remove(page):
     page.reset()
     a = ClickAction(x=1, y=1)
     b = DelayAction(duration_ms=100)
     page._actions = [a, b]
-    page._refresh_list(select_index=0)
+    page._refresh_list(select_path=[0])
 
     page._move(1)  # move 'a' down
     assert page._actions == [b, a]
 
-    page._action_list.setCurrentRow(0)
+    page._action_list.setCurrentItem(page._action_list.topLevelItem(0))
     page._on_remove()
     assert page._actions == [a]
 
@@ -248,7 +322,7 @@ def test_duplicate_creates_distinct_action(page):
     page.reset()
     a = ClickAction(x=5, y=6)
     page._actions = [a]
-    page._refresh_list(select_index=0)
+    page._refresh_list(select_path=[0])
 
     page._on_duplicate()
     assert len(page._actions) == 2
@@ -291,7 +365,7 @@ def test_loop_selected_wraps_contiguous_range(page, monkeypatch):
     page._actions = [ClickAction(x=1, y=1), ClickAction(x=2, y=2), ClickAction(x=3, y=3)]
     page._refresh_list()
     for r in (0, 1):
-        page._action_list.item(r).setSelected(True)
+        page._action_list.topLevelItem(r).setSelected(True)
 
     page._on_loop_selected()
 
@@ -302,16 +376,111 @@ def test_loop_selected_wraps_contiguous_range(page, monkeypatch):
     assert isinstance(page._actions[1], ClickAction)
 
 
+def test_loop_selected_can_wrap_a_selection_that_already_contains_a_loop(page, monkeypatch):
+    """Nested loops: selecting a loop block alongside a plain step and
+    looping again should wrap them together instead of being blocked."""
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (10, True))
+
+    page.reset()
+    page._actions = [
+        LoopBlock(count=25, actions=[ClickAction(x=1, y=1)]),
+        ClickAction(x=2, y=2),
+    ]
+    page._refresh_list()
+    for r in (0, 1):
+        page._action_list.topLevelItem(r).setSelected(True)
+
+    page._on_loop_selected()
+
+    assert len(page._actions) == 1
+    outer = page._actions[0]
+    assert isinstance(outer, LoopBlock)
+    assert outer.count == 10
+    assert len(outer.actions) == 2
+    inner = outer.actions[0]
+    assert isinstance(inner, LoopBlock)
+    assert inner.count == 25
+
+
+def test_loop_selected_rejects_non_sibling_selection(page, monkeypatch):
+    """A step inside a loop and a step outside it aren't at the same level,
+    so they can't be wrapped together."""
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+    warned = []
+    monkeypatch.setattr(bm.QMessageBox, "warning", lambda *a, **k: warned.append(True))
+
+    page.reset()
+    page._actions = [
+        LoopBlock(count=3, actions=[ClickAction(x=1, y=1)]),
+        ClickAction(x=2, y=2),
+    ]
+    page._refresh_list()
+    inner_item = page._action_list.topLevelItem(0).child(0)
+    inner_item.setSelected(True)
+    page._action_list.topLevelItem(1).setSelected(True)
+
+    page._on_loop_selected()
+
+    assert warned == [True]
+    # Nothing changed.
+    assert len(page._actions) == 2
+    assert isinstance(page._actions[0], LoopBlock)
+
+
 def test_ungroup_expands_loop(page):
     page.reset()
     page._actions = [LoopBlock(count=3, actions=[ClickAction(x=1, y=1), ClickAction(x=2, y=2)])]
-    page._refresh_list(select_index=0)
-    page._action_list.setCurrentRow(0)
+    page._refresh_list(select_path=[0])
+    page._action_list.setCurrentItem(page._action_list.topLevelItem(0))
 
     page._on_ungroup()
 
     assert len(page._actions) == 2
     assert all(isinstance(a, ClickAction) for a in page._actions)
+
+
+def test_ungroup_only_expands_one_level(page):
+    """Ungrouping an outer loop leaves a loop nested inside it intact."""
+    page.reset()
+    page._actions = [
+        LoopBlock(count=10, actions=[
+            ClickAction(x=2, y=2),
+            LoopBlock(count=25, actions=[ClickAction(x=1, y=1)]),
+        ]),
+    ]
+    page._refresh_list(select_path=[0])
+    page._action_list.setCurrentItem(page._action_list.topLevelItem(0))
+
+    page._on_ungroup()
+
+    assert len(page._actions) == 2
+    assert isinstance(page._actions[0], ClickAction)
+    assert isinstance(page._actions[1], LoopBlock)
+    assert page._actions[1].count == 25
+
+
+def test_move_and_remove_inside_nested_loop(page):
+    """Move/Remove operate on whatever's selected, including a step nested
+    inside a loop block — not just the top level."""
+    page.reset()
+    inner_a = ClickAction(x=1, y=1)
+    inner_b = ClickAction(x=2, y=2)
+    block = LoopBlock(count=5, actions=[inner_a, inner_b])
+    page._actions = [block]
+    page._refresh_list()
+
+    loop_item = page._action_list.topLevelItem(0)
+    page._action_list.setCurrentItem(loop_item.child(0))
+    page._move(1)  # swap inner_a/inner_b within the loop body
+    assert page._actions[0].actions == [inner_b, inner_a]
+
+    page._refresh_list()
+    loop_item = page._action_list.topLevelItem(0)
+    page._action_list.setCurrentItem(loop_item.child(0))
+    page._on_remove()
+    assert page._actions[0].actions == [inner_a]
 
 
 def test_loop_macro_round_trips_through_json(page, macro_service):
@@ -329,6 +498,28 @@ def test_loop_macro_round_trips_through_json(page, macro_service):
     assert isinstance(macro.actions[1], LoopBlock)
     assert macro.actions[1].count == 4
     assert len(macro.actions[1].actions) == 2
+
+
+def test_nested_loop_macro_round_trips_through_json(page, macro_service):
+    page.reset()
+    page._name_input.setText("Nested")
+    page._actions = [
+        LoopBlock(count=10, actions=[
+            ClickAction(x=2, y=2),
+            LoopBlock(count=25, actions=[ClickAction(x=1, y=1)]),
+        ]),
+    ]
+    page._on_save()
+
+    reloaded = MacroService(macro_service._macros_path)
+    macro = reloaded.get_all()[0]
+    outer = macro.actions[0]
+    assert isinstance(outer, LoopBlock)
+    assert outer.count == 10
+    inner = outer.actions[1]
+    assert isinstance(inner, LoopBlock)
+    assert inner.count == 25
+    assert inner.actions[0].x == 1
 
 
 def test_save_requires_name_and_actions(page, macro_service, monkeypatch):

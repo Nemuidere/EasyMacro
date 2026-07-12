@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QPushButton,
-    QListWidget,
-    QListWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QComboBox,
     QSpinBox,
     QLineEdit,
@@ -185,14 +185,6 @@ def summarize_action(action: Action) -> str:
     if delay_after:
         base += f"  ·  +{delay_after}ms delay"
     return base
-
-
-def summarize_item(item) -> str:
-    """One-line summary of a macro item (a leaf action or a loop block)."""
-    if isinstance(item, LoopBlock):
-        inner = " · ".join(summarize_action(a) for a in item.actions) or "empty"
-        return f"⟳ Loop ×{item.count}  [ {inner} ]"
-    return summarize_action(item)
 
 
 class ActionConfigDialog(QDialog):
@@ -506,6 +498,43 @@ class ActionConfigDialog(QDialog):
         return [self._result]
 
 
+class RealisticMovementDialog(QDialog):
+    """Prompt for the "Add realistic movement" transform.
+
+    Asks for a move speed and whether to also connect each loop's (and the
+    macro's) last step back to its first, so wrapping around on repeat
+    doesn't teleport the cursor.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Realistic movement")
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        layout.addLayout(form)
+
+        self.speed_spin = QSpinBox()
+        self.speed_spin.setRange(1, 10)
+        self.speed_spin.setValue(5)
+        form.addRow("Move speed (1-10):", self.speed_spin)
+
+        self.loop_check = QCheckBox("Account for macro loops")
+        self.loop_check.setToolTip(
+            "A macro usually ends somewhere different from where it started. "
+            "When checked, a move back to the start is added at the end of "
+            "every loop (and the macro itself, if it repeats), instead of "
+            "teleporting there on the next pass."
+        )
+        form.addRow(self.loop_check)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 class MacroBuilderPage(QWidget):
     """Page for assembling a macro from an ordered list of actions."""
 
@@ -561,8 +590,10 @@ class MacroBuilderPage(QWidget):
         # Action list + side controls
         list_row = QHBoxLayout()
 
-        self._action_list = QListWidget()
+        self._action_list = QTreeWidget()
         self._action_list.setObjectName("actionList")
+        self._action_list.setHeaderHidden(True)
+        self._action_list.setIndentation(18)
         list_row.addWidget(self._action_list, 1)
 
         # Side controls: a compact 2-column grid instead of one tall stack of
@@ -600,7 +631,8 @@ class MacroBuilderPage(QWidget):
         side.addLayout(button_grid)
         side.addStretch()
 
-        # Allow selecting a contiguous range to group into a loop.
+        # Allow selecting a contiguous range of sibling rows (at any nesting
+        # depth) to group into a loop.
         self._action_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         list_row.addLayout(side)
         layout.addLayout(list_row, 1)
@@ -671,17 +703,75 @@ class MacroBuilderPage(QWidget):
         self._save_btn.clicked.connect(self._on_save)
         self._cancel_btn.clicked.connect(lambda: self.cancel_requested.emit())
 
-    # -- list helpers -------------------------------------------------------
+    # -- tree helpers ---------------------------------------------------------
+    #
+    # Steps are addressed by "path": a list of indices from the macro root
+    # down through nested LoopBlock bodies, e.g. [2, 1, 0] means "top-level
+    # item 2's .actions[1]'s .actions[0]". This is what lets Move/Duplicate/
+    # Remove/Loop/Ungroup work uniformly at any nesting depth. The tree is
+    # always fully rebuilt from self._actions after a mutation (like the old
+    # flat list was) — simplest way to keep it in sync.
 
-    def _refresh_list(self, select_index: Optional[int] = None) -> None:
+    def _refresh_list(self, select_path: Optional[List[int]] = None) -> None:
         self._action_list.clear()
-        for i, item in enumerate(self._actions):
-            self._action_list.addItem(QListWidgetItem(f"{i + 1}.  {summarize_item(item)}"))
-        if select_index is not None and 0 <= select_index < self._action_list.count():
-            self._action_list.setCurrentRow(select_index)
+        self._populate_tree(self._action_list, self._actions, [])
+        self._action_list.expandAll()
+        if select_path:
+            item = self._tree_item_at_path(select_path)
+            if item is not None:
+                self._action_list.setCurrentItem(item)
 
-    def _selected_index(self) -> int:
-        return self._action_list.currentRow()
+    def _populate_tree(self, parent, items: List, path_prefix: List[int]) -> None:
+        """Recursively build tree rows for `items` under `parent` (either the
+        QTreeWidget itself, for the top level, or a QTreeWidgetItem)."""
+        for i, item in enumerate(items):
+            path = path_prefix + [i]
+            if isinstance(item, LoopBlock):
+                node = QTreeWidgetItem([f"⟳  Loop  ×{item.count}"])
+                bold = node.font(0)
+                bold.setBold(True)
+                node.setFont(0, bold)
+                node.setData(0, Qt.ItemDataRole.UserRole, path)
+                self._add_tree_node(parent, node)
+                self._populate_tree(node, item.actions, path)
+            else:
+                leaf = QTreeWidgetItem([summarize_action(item)])
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)
+                self._add_tree_node(parent, leaf)
+
+    @staticmethod
+    def _add_tree_node(parent, node: QTreeWidgetItem) -> None:
+        if isinstance(parent, QTreeWidget):
+            parent.addTopLevelItem(node)
+        else:
+            parent.addChild(node)
+
+    def _tree_item_at_path(self, path: List[int]) -> Optional[QTreeWidgetItem]:
+        if not path:
+            return None
+        node = self._action_list.topLevelItem(path[0])
+        for idx in path[1:]:
+            if node is None:
+                return None
+            node = node.child(idx)
+        return node
+
+    def _selected_path(self) -> Optional[List[int]]:
+        item = self._action_list.currentItem()
+        if item is None:
+            return None
+        return list(item.data(0, Qt.ItemDataRole.UserRole))
+
+    def _selected_paths(self) -> List[List[int]]:
+        return [list(i.data(0, Qt.ItemDataRole.UserRole)) for i in self._action_list.selectedItems()]
+
+    def _container_for_path(self, path: List[int]) -> List:
+        """The list that directly holds the item addressed by `path` — i.e.
+        every index but the last, walked through nested LoopBlock.actions."""
+        container = self._actions
+        for idx in path[:-1]:
+            container = container[idx].actions
+        return container
 
     # -- action ops ---------------------------------------------------------
 
@@ -692,13 +782,13 @@ class MacroBuilderPage(QWidget):
             new_actions = dialog.result_actions()
             if new_actions:
                 self._actions.extend(new_actions)
-                self._refresh_list(select_index=len(self._actions) - 1)
+                self._refresh_list(select_path=[len(self._actions) - 1])
 
-    def _on_edit_item(self, item: QListWidgetItem) -> None:
-        idx = self._action_list.row(item)
-        if idx < 0:
-            return
-        entry = self._actions[idx]
+    def _on_edit_item(self, item: QTreeWidgetItem, column: int = 0) -> None:
+        path = list(item.data(0, Qt.ItemDataRole.UserRole))
+        container = self._container_for_path(path)
+        idx = path[-1]
+        entry = container[idx]
 
         # Double-clicking a loop edits its repeat count.
         if isinstance(entry, LoopBlock):
@@ -708,31 +798,32 @@ class MacroBuilderPage(QWidget):
             )
             if ok:
                 entry.count = count
-                self._refresh_list(select_index=idx)
+                self._refresh_list(select_path=path)
             return
 
         kind = self._kind_for_action(entry)
         dialog = ActionConfigDialog(kind, existing=entry, parent=self)
         if dialog.exec() == QDialog.Accepted and dialog.result_action() is not None:
-            self._actions[idx] = dialog.result_action()
-            self._refresh_list(select_index=idx)
-
-    def _selected_rows(self) -> List[int]:
-        """Return the currently selected row indices, sorted ascending."""
-        return sorted(i.row() for i in self._action_list.selectedIndexes())
+            container[idx] = dialog.result_action()
+            self._refresh_list(select_path=path)
 
     def _on_loop_selected(self) -> None:
-        """Wrap the selected contiguous rows into a loop block."""
-        rows = self._selected_rows()
-        if not rows:
+        """Wrap the selected contiguous sibling rows into a loop block.
+
+        Loops can nest: a selection may already contain loop blocks, which
+        simply become part of the new outer loop's body.
+        """
+        paths = self._selected_paths()
+        if not paths:
             QMessageBox.information(self, "Loop", "Select one or more steps to loop.")
             return
-        if rows != list(range(rows[0], rows[-1] + 1)):
-            QMessageBox.warning(self, "Loop", "Please select a contiguous range of steps.")
+        parent_path = paths[0][:-1]
+        if any(p[:-1] != parent_path for p in paths):
+            QMessageBox.warning(self, "Loop", "Select steps that are all at the same level (siblings).")
             return
-        # Loops don't nest in the builder (keep it simple/legible).
-        if any(isinstance(self._actions[r], LoopBlock) for r in rows):
-            QMessageBox.warning(self, "Loop", "A selection that already contains a loop can't be looped again. Ungroup it first.")
+        indices = sorted(p[-1] for p in paths)
+        if indices != list(range(indices[0], indices[-1] + 1)):
+            QMessageBox.warning(self, "Loop", "Please select a contiguous range of steps.")
             return
 
         count, ok = QInputDialog.getInt(
@@ -741,20 +832,30 @@ class MacroBuilderPage(QWidget):
         if not ok:
             return
 
-        start, end = rows[0], rows[-1]
-        block = LoopBlock(count=count, actions=[a for a in self._actions[start:end + 1]])
-        self._actions[start:end + 1] = [block]
-        self._refresh_list(select_index=start)
+        container = self._container_for_path(parent_path + [indices[0]])
+        start, end = indices[0], indices[-1]
+        block = LoopBlock(count=count, actions=[a for a in container[start:end + 1]])
+        container[start:end + 1] = [block]
+        self._refresh_list(select_path=parent_path + [start])
 
     def _on_ungroup(self) -> None:
-        """Expand the selected loop block back into its individual steps."""
-        idx = self._selected_index()
-        if idx < 0 or not isinstance(self._actions[idx], LoopBlock):
+        """Expand the selected loop block back into its individual steps
+        (one level — a loop nested inside it stays intact and can be
+        ungrouped again separately)."""
+        path = self._selected_path()
+        if path is None:
             QMessageBox.information(self, "Ungroup", "Select a loop to ungroup.")
             return
-        block: LoopBlock = self._actions[idx]
-        self._actions[idx:idx + 1] = list(block.actions)
-        self._refresh_list(select_index=idx)
+        container = self._container_for_path(path)
+        idx = path[-1]
+        entry = container[idx]
+        if not isinstance(entry, LoopBlock):
+            QMessageBox.information(self, "Ungroup", "Select a loop to ungroup.")
+            return
+        container[idx:idx + 1] = list(entry.actions)
+        parent_path = path[:-1]
+        select_path = (parent_path + [idx]) if entry.actions else (parent_path or None)
+        self._refresh_list(select_path=select_path)
 
     def _kind_for_action(self, action: Action) -> str:
         if isinstance(action, ClickAction):
@@ -770,50 +871,81 @@ class MacroBuilderPage(QWidget):
         return "delay"
 
     def _move(self, delta: int) -> None:
-        idx = self._selected_index()
-        new_idx = idx + delta
-        if idx < 0 or not (0 <= new_idx < len(self._actions)):
+        path = self._selected_path()
+        if path is None:
             return
-        self._actions[idx], self._actions[new_idx] = self._actions[new_idx], self._actions[idx]
-        self._refresh_list(select_index=new_idx)
+        container = self._container_for_path(path)
+        idx = path[-1]
+        new_idx = idx + delta
+        if not (0 <= new_idx < len(container)):
+            return
+        container[idx], container[new_idx] = container[new_idx], container[idx]
+        self._refresh_list(select_path=path[:-1] + [new_idx])
 
     def _on_duplicate(self) -> None:
-        idx = self._selected_index()
-        if idx < 0:
+        path = self._selected_path()
+        if path is None:
             return
-        # Deep-copy the action and give the clone a fresh id so the two remain
-        # distinct entries.
+        container = self._container_for_path(path)
+        idx = path[-1]
+        # Deep-copy the item and give it (and any nested children, for a
+        # loop block) a fresh id so the clone doesn't share identity with
+        # its source.
+        clone = container[idx].model_copy(deep=True)
+        self._reassign_ids(clone)
+        container.insert(idx + 1, clone)
+        self._refresh_list(select_path=path[:-1] + [idx + 1])
+
+    def _reassign_ids(self, item) -> None:
         from src.models.base import generate_id
-        clone = self._actions[idx].model_copy(deep=True)
-        object.__setattr__(clone, "id", generate_id())
-        self._actions.insert(idx + 1, clone)
-        self._refresh_list(select_index=idx + 1)
+        object.__setattr__(item, "id", generate_id())
+        if isinstance(item, LoopBlock):
+            for child in item.actions:
+                self._reassign_ids(child)
 
     def _on_remove(self) -> None:
-        idx = self._selected_index()
-        if idx < 0:
+        path = self._selected_path()
+        if path is None:
             return
-        self._actions.pop(idx)
-        self._refresh_list(select_index=min(idx, len(self._actions) - 1))
+        container = self._container_for_path(path)
+        idx = path[-1]
+        container.pop(idx)
+        parent_path = path[:-1]
+        select_path = (parent_path + [min(idx, len(container) - 1)]) if container else (parent_path or None)
+        self._refresh_list(select_path=select_path)
 
     def _on_realistic_movement(self) -> None:
         """Insert mouse-move steps before position changes.
 
-        Prompts once for a move speed, then walks the action list (recursing
-        into loop blocks) inserting a MouseMoveAction before any fixed-position
-        Click/Move whose target differs from the last known cursor position —
-        so the cursor visibly travels there instead of teleporting.
+        Prompts once for a move speed and whether to also connect loop ends
+        back to their starts, then walks the action list (recursing into
+        loop blocks at any depth) inserting a MouseMoveAction before any
+        fixed-position Click/Move whose target differs from the last known
+        cursor position — so the cursor visibly travels there instead of
+        teleporting.
         """
         if not self._actions:
             QMessageBox.information(self, "Realistic movement", "Add some steps first.")
             return
-        speed, ok = QInputDialog.getInt(
-            self, "Realistic movement", "Move speed for inserted steps (1-10):", 5, 1, 10
-        )
-        if not ok:
+        options = self._prompt_realistic_movement_options()
+        if options is None:
             return
+        speed, account_for_loop = options
+
         self._actions, _ = self._insert_realistic_moves(self._actions, speed)
+        if account_for_loop:
+            self._connect_loop_ends(self._actions, speed)
         self._refresh_list()
+
+    def _prompt_realistic_movement_options(self) -> Optional[tuple]:
+        """Ask for move speed + "account for macro loops". Returns
+        (speed, account_for_loop), or None if cancelled. Split out from
+        _on_realistic_movement so tests can stub the prompt directly instead
+        of driving a real modal dialog."""
+        dialog = RealisticMovementDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return dialog.speed_spin.value(), dialog.loop_check.isChecked()
 
     @staticmethod
     def _position_of(item) -> Optional[tuple]:
@@ -859,6 +991,65 @@ class MacroBuilderPage(QWidget):
             # Key press/hold/release and delay actions don't change position.
 
         return result, last_pos
+
+    def _connect_loop_ends(self, items: List, speed: int, top_level: bool = True) -> None:
+        """Append a move back to the start at the end of every loop body that
+        will actually repeat (count > 1), and — if the macro itself is set to
+        loop/repeat — at the very end of the top-level list too. Recurses to
+        any nesting depth; run after _insert_realistic_moves so it sees the
+        already-inserted moves.
+        """
+        for item in items:
+            if isinstance(item, LoopBlock):
+                self._connect_loop_ends(item.actions, speed, top_level=False)
+                if item.count > 1:
+                    self._append_loop_connector(item.actions, speed)
+
+        if top_level:
+            macro_will_repeat = self._loop_check.isChecked() or self._repeat_spin.value() > 1
+            if macro_will_repeat:
+                self._append_loop_connector(items, speed)
+
+    @staticmethod
+    def _append_loop_connector(items: List, speed: int) -> None:
+        """Append a MouseMoveAction back to `items`' own first known
+        position, if its last known position differs from it. No-op if
+        either end is unknowable or they already match — which is what
+        keeps this idempotent on repeat runs.
+        """
+        if not items:
+            return
+        first_pos = MacroBuilderPage._first_known_position(items)
+        last_pos = MacroBuilderPage._last_known_position(items)
+        if first_pos is None or last_pos is None or first_pos == last_pos:
+            return
+        items.append(MouseMoveAction(x=first_pos[0], y=first_pos[1], speed=speed, smooth=True))
+
+    @staticmethod
+    def _first_known_position(items: List) -> Optional[tuple]:
+        for item in items:
+            if isinstance(item, LoopBlock):
+                pos = MacroBuilderPage._first_known_position(item.actions)
+                if pos is not None:
+                    return pos
+                continue
+            pos = MacroBuilderPage._position_of(item)
+            if pos is not None:
+                return pos
+        return None
+
+    @staticmethod
+    def _last_known_position(items: List) -> Optional[tuple]:
+        for item in reversed(items):
+            if isinstance(item, LoopBlock):
+                pos = MacroBuilderPage._last_known_position(item.actions)
+                if pos is not None:
+                    return pos
+                continue
+            pos = MacroBuilderPage._position_of(item)
+            if pos is not None:
+                return pos
+        return None
 
     # -- load / save --------------------------------------------------------
 

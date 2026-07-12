@@ -11,7 +11,9 @@ from src.models.action import (
     ClickAction,
     DelayAction,
     KeyPressAction,
+    LoopBlock,
     MouseMoveAction,
+    flatten_items,
     parse_action,
 )
 
@@ -220,3 +222,48 @@ class TestParseAction:
         """Test that parsing with unknown type raises ValueError."""
         with pytest.raises(ValueError, match="Unknown action type"):
             parse_action({"action_type": "unknown"})
+
+
+class TestLoopBlockNesting:
+    """Tests for LoopBlock, including nesting to arbitrary depth."""
+
+    def test_create_loop_block_with_leaf_actions(self):
+        block = LoopBlock(count=5, actions=[ClickAction(x=1, y=1)])
+
+        assert block.count == 5
+        assert len(block.actions) == 1
+
+    def test_count_must_be_at_least_one(self):
+        with pytest.raises(ValueError):
+            LoopBlock(count=0, actions=[ClickAction(x=1, y=1)])
+
+    def test_loop_block_can_contain_a_nested_loop_block(self):
+        inner = LoopBlock(count=25, actions=[ClickAction(x=1, y=1)])
+        outer = LoopBlock(count=10, actions=[ClickAction(x=2, y=2), inner])
+
+        assert isinstance(outer.actions[1], LoopBlock)
+        assert outer.actions[1].count == 25
+
+    def test_nested_loop_blocks_round_trip_through_dict(self):
+        inner = LoopBlock(count=25, actions=[ClickAction(x=1, y=1)])
+        outer = LoopBlock(count=10, actions=[ClickAction(x=2, y=2), inner])
+
+        data = outer.model_dump()
+        reloaded = LoopBlock.model_validate(data)
+
+        assert isinstance(reloaded.actions[1], LoopBlock)
+        assert reloaded.actions[1].count == 25
+        assert isinstance(reloaded.actions[1].actions[0], ClickAction)
+
+    def test_flatten_items_handles_arbitrary_nesting_depth(self):
+        # Loop A (x25) inside loop B (x10), then a trailing click.
+        inner = LoopBlock(count=25, actions=[ClickAction(x=1, y=1)])
+        outer = LoopBlock(count=10, actions=[ClickAction(x=2, y=2), inner])
+        items = [outer, ClickAction(x=3, y=3)]
+
+        flat = flatten_items(items)
+
+        # outer runs 10x: each pass is [click(2,2), inner(25x click(1,1))] = 26 items
+        # + 1 trailing click(3,3)
+        assert len(flat) == 10 * 26 + 1
+        assert flat[-1].x == 3

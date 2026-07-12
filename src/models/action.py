@@ -190,17 +190,27 @@ class LoopBlock(EasyMacroBaseModel):
     are expanded into a flat action sequence at run time. The whole macro is
     still wrapped by the macro-level ``repeat_count`` (the outer loop).
 
+    Loop blocks can nest to any depth: a loop's own ``actions`` may themselves
+    contain further ``LoopBlock``s (e.g. loop A x25, then loop [A, B] x10).
+
     Attributes:
         count: Number of times to repeat the block (>= 1).
-        actions: The actions performed on each pass.
+        actions: The actions (and/or nested loop blocks) performed on each pass.
     """
 
     count: int = Field(default=1, ge=1, description="Times to repeat this block")
-    actions: list[Action] = Field(default_factory=list, description="Actions in the loop")
+    actions: list["MacroItem"] = Field(
+        default_factory=list, description="Actions and/or nested loop blocks in the loop"
+    )
 
 
-# An item in a macro body is either a leaf action or a loop block.
+# An item in a macro body is either a leaf action or a loop block. Loop blocks
+# can nest (see LoopBlock docstring), so this is a self-referencing type — the
+# forward reference above is resolved by the model_rebuild() call below, once
+# LoopBlock itself is fully defined.
 MacroItem = ClickAction | DelayAction | KeyPressAction | MouseMoveAction | LoopBlock
+
+LoopBlock.model_rebuild()
 
 
 def flatten_items(items: list) -> list:
