@@ -504,3 +504,94 @@ def test_click_delay_after_variance_percent_is_used(make_engine, monkeypatch):
     QTest.qWait(80)
 
     assert captured["variance_percent"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Mouse-button hold/release (round J) — mirrors key hold/release.
+# ---------------------------------------------------------------------------
+
+def test_click_hold_then_release(make_engine):
+    engine, ahk, state = make_engine()
+    macro = _macro(
+        [
+            ClickAction(x=10, y=20, button="right", action_type=ActionType.CLICK_HOLD),
+            ClickAction(x=0, y=0, button="right", action_type=ActionType.CLICK_RELEASE),
+        ],
+        repeat_count=1,
+    )
+
+    engine.run_macro(macro)
+    QTest.qWait(80)
+
+    ahk.mouse_down.assert_called_once_with(10, 20, button="right")
+    ahk.mouse_up.assert_called_once_with("right")
+    assert engine._held_mouse_buttons == set()
+
+
+def test_click_hold_with_modifiers_presses_all(make_engine):
+    engine, ahk, state = make_engine()
+    macro = _macro(
+        [
+            ClickAction(x=1, y=1, button="left", modifiers=["ctrl"], action_type=ActionType.CLICK_HOLD),
+            ClickAction(x=0, y=0, button="left", modifiers=["ctrl"], action_type=ActionType.CLICK_RELEASE),
+        ],
+        repeat_count=1,
+    )
+
+    engine.run_macro(macro)
+    QTest.qWait(80)
+
+    ahk.key_down.assert_called_once_with("ctrl")
+    ahk.mouse_down.assert_called_once_with(1, 1, button="left")
+    ahk.mouse_up.assert_called_once_with("left")
+    ahk.key_up.assert_called_once_with("ctrl")
+    assert engine._held_keys == set()
+    assert engine._held_mouse_buttons == set()
+
+
+def test_click_hold_uses_cursor_position(make_engine):
+    engine, ahk, state = make_engine()  # ahk.get_mouse_position -> (5, 5)
+    macro = _macro(
+        [ClickAction(x=0, y=0, button="left", use_cursor_position=True, action_type=ActionType.CLICK_HOLD)],
+        repeat_count=1,
+    )
+
+    engine.run_macro(macro)
+    QTest.qWait(80)
+
+    ahk.get_mouse_position.assert_called()
+    ahk.mouse_down.assert_called_once_with(5, 5, button="left")
+
+
+def test_click_hold_updates_stats(make_engine):
+    engine, ahk, state = make_engine()
+    macro = _macro([ClickAction(x=1, y=1, action_type=ActionType.CLICK_HOLD)], repeat_count=1)
+
+    engine.run_macro(macro)
+    QTest.qWait(80)
+
+    engine._stats.update_clicks.assert_called_with(macro.id, 1)
+
+
+def test_stop_releases_held_mouse_button(make_engine):
+    engine, ahk, state = make_engine()
+    macro = _macro(
+        [
+            ClickAction(x=1, y=1, button="right", action_type=ActionType.CLICK_HOLD),
+            DelayAction(duration_ms=10000),
+        ],
+        repeat_count=1,
+    )
+
+    engine.run_macro(macro)
+    QTest.qWait(60)
+
+    # Held during the long delay; not released yet.
+    ahk.mouse_down.assert_called_once_with(1, 1, button="right")
+    assert "right" in engine._held_mouse_buttons
+    ahk.mouse_up.assert_not_called()
+
+    engine.stop_macro()
+
+    ahk.mouse_up.assert_called_once_with("right")
+    assert engine._held_mouse_buttons == set()

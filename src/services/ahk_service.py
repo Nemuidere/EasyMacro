@@ -90,6 +90,56 @@ class AHKService:
             self._logger.error(f"Click failed: {e}")
             raise MacroExecutionError(f"Click failed: {e}") from e
     
+    def mouse_down(self, x: int, y: int, button: str = "left") -> None:
+        """Press a mouse button down at a position and hold it (no release).
+
+        Args:
+            x: X coordinate.
+            y: Y coordinate.
+            button: Mouse button ("left", "right", "middle").
+
+        Raises:
+            ValueError: If coordinates are negative or button is unknown.
+            MacroExecutionError: If the press fails.
+        """
+        if x < 0:
+            raise ValueError(f"X coordinate cannot be negative: {x}")
+        if y < 0:
+            raise ValueError(f"Y coordinate cannot be negative: {y}")
+        if button not in ("left", "right", "middle"):
+            raise ValueError(f"Unknown button: {button}")
+
+        self._logger.debug(f"Mouse down at ({x}, {y}) with button {button}")
+
+        try:
+            self._ahk.mouse_move(x, y, speed=0)
+            self._ahk.click(button=button, direction="D")
+        except Exception as e:
+            self._logger.error(f"Mouse down failed: {e}")
+            raise MacroExecutionError(f"Mouse down failed: {e}") from e
+
+    def mouse_up(self, button: str = "left") -> None:
+        """Release a previously held-down mouse button, wherever the cursor
+        currently is (mirrors ``key_up`` — no repositioning).
+
+        Args:
+            button: Mouse button ("left", "right", "middle").
+
+        Raises:
+            ValueError: If button is unknown.
+            MacroExecutionError: If the release fails.
+        """
+        if button not in ("left", "right", "middle"):
+            raise ValueError(f"Unknown button: {button}")
+
+        self._logger.debug(f"Mouse up with button {button}")
+
+        try:
+            self._ahk.click(button=button, direction="U")
+        except Exception as e:
+            self._logger.error(f"Mouse up failed: {e}")
+            raise MacroExecutionError(f"Mouse up failed: {e}") from e
+
     def mouse_move(
         self,
         x: int,

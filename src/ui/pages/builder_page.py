@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 from src.core.logger import get_logger
 from src.models.macro import Macro
@@ -53,14 +53,13 @@ from src.services.macro_service import get_macro_service
 from src.ui.widgets.hotkey_input import HotkeyInput
 
 
-# Action kinds offered in the "Add action" dropdown. Each maps to how the config
-# dialog is built and how the resulting Action is constructed.
+# Action kinds offered in the "Add action" dropdown. "input" covers keyboard
+# keys AND mouse buttons (press/hold/release) in one unified dialog — those
+# turned out to be the same underlying gesture with a different device.
+# Move and Delay aren't a "press an input" gesture, so they stay separate.
 ACTION_KINDS = [
-    ("click", "Click"),
+    ("input", "Input (key / mouse click)"),
     ("move", "Move mouse"),
-    ("key_press", "Key press"),
-    ("key_hold", "Key hold"),
-    ("key_release", "Key release"),
     ("delay", "Delay"),
 ]
 
@@ -158,14 +157,20 @@ class KeyCaptureButton(QPushButton):
 def summarize_action(action: Action) -> str:
     """Return a short, human-readable one-line summary of an action."""
     if isinstance(action, ClickAction):
-        if action.action_type == ActionType.DOUBLE_CLICK:
-            verb = "Double-click"
-        elif action.action_type == ActionType.RIGHT_CLICK:
-            verb = "Right-click"
+        if action.action_type == ActionType.CLICK_HOLD:
+            where = "cursor pos" if action.use_cursor_position else f"({action.x}, {action.y})"
+            base = f"Hold {action.button} button @ {where}"
+        elif action.action_type == ActionType.CLICK_RELEASE:
+            base = f"Release {action.button} button"
         else:
-            verb = f"{action.button.capitalize()}-click"
-        where = "cursor pos" if action.use_cursor_position else f"({action.x}, {action.y})"
-        base = f"{verb} @ {where}"
+            if action.action_type == ActionType.DOUBLE_CLICK:
+                verb = "Double-click"
+            elif action.action_type == ActionType.RIGHT_CLICK:
+                verb = "Right-click"
+            else:
+                verb = f"{action.button.capitalize()}-click"
+            where = "cursor pos" if action.use_cursor_position else f"({action.x}, {action.y})"
+            base = f"{verb} @ {where}"
     elif isinstance(action, MouseMoveAction):
         base = f"Move to ({action.x}, {action.y}) · speed {action.speed}"
     elif isinstance(action, KeyPressAction):
@@ -187,12 +192,83 @@ def summarize_action(action: Action) -> str:
     return base
 
 
-class ActionConfigDialog(QDialog):
-    """Modal dialog to create or edit a single action of a given kind.
+class _PositionCaptureMixin:
+    """Mixin giving a dialog a "Capture position (F2)" button wired to the
+    on-screen CapturePanel overlay. Host class must set self._x_spin /
+    self._y_spin before calling _build_capture_button(), and must be a
+    QWidget (used as the overlay's parent)."""
 
-    On accept, :meth:`result_action` returns the configured Action instance.
-    Click/move actions offer position capture (press F2) via the position
-    capture service.
+    def _build_capture_button(self) -> QPushButton:
+        btn = QPushButton("Capture position (F2)")
+        btn.clicked.connect(self._start_capture)
+        return btn
+
+    def _start_capture(self) -> None:
+        """Capture a screen position with the full-screen overlay.
+
+        Reliable, pure-Qt: the user clicks the target position on a translucent
+        always-on-top overlay; the click never reaches the underlying window.
+        """
+        from src.ui.widgets.capture_overlay import CapturePanel
+
+        self._overlay = CapturePanel(self)
+        self._overlay.captured.connect(self._on_position_captured)
+        self._overlay.cancelled.connect(self._on_position_cancelled)
+        self._overlay.show()
+
+    def _on_position_captured(self, x: int, y: int) -> None:
+        # Spin-box minimum is 0, so any negative multi-monitor coord clamps.
+        self._x_spin.setValue(x)
+        self._y_spin.setValue(y)
+        self._overlay = None
+
+    def _on_position_cancelled(self) -> None:
+        self._overlay = None
+
+
+class _DelayAfterFieldsMixin:
+    """Mixin giving a dialog the shared "delay after this step" checkbox +
+    ms/variance spinners, so a step can carry its own trailing delay instead
+    of always needing a separate standalone Delay step after it."""
+
+    def _build_delay_after_fields(self, form: QFormLayout) -> None:
+        self._delay_after_check = QCheckBox("Add delay after this step")
+        form.addRow(self._delay_after_check)
+
+        self._delay_after_ms = QSpinBox()
+        self._delay_after_ms.setRange(0, 3600000)
+        self._delay_after_ms.setValue(0)
+        self._delay_after_ms.setSuffix(" ms")
+        self._delay_after_ms.setEnabled(False)
+        form.addRow("Delay duration:", self._delay_after_ms)
+
+        self._delay_after_variance = QSpinBox()
+        self._delay_after_variance.setRange(0, 100)
+        self._delay_after_variance.setValue(5)
+        self._delay_after_variance.setSuffix(" %")
+        self._delay_after_variance.setEnabled(False)
+        form.addRow("Delay variance:", self._delay_after_variance)
+
+        self._delay_after_check.toggled.connect(self._delay_after_ms.setEnabled)
+        self._delay_after_check.toggled.connect(self._delay_after_variance.setEnabled)
+
+    def _delay_after_kwargs(self) -> dict:
+        ms = self._delay_after_ms.value() if self._delay_after_check.isChecked() else 0
+        return dict(delay_after_ms=ms, delay_after_variance_percent=self._delay_after_variance.value())
+
+    def _load_delay_after(self, action: Action) -> None:
+        delay_after = getattr(action, "delay_after_ms", 0)
+        if delay_after:
+            self._delay_after_check.setChecked(True)
+            self._delay_after_ms.setValue(delay_after)
+            self._delay_after_variance.setValue(getattr(action, "delay_after_variance_percent", 5))
+
+
+class ActionConfigDialog(QDialog, _PositionCaptureMixin, _DelayAfterFieldsMixin):
+    """Modal dialog to create or edit a Move-mouse or Delay step.
+
+    (Click/key/mouse-hold configuration lives in InputActionDialog — those
+    turned out to be one "press an input" gesture, not four separate kinds.)
     """
 
     def __init__(
@@ -223,14 +299,9 @@ class ActionConfigDialog(QDialog):
         form = QFormLayout()
         layout.addLayout(form)
 
-        if self._kind in ("click", "move"):
-            self._build_position_fields(form)
-        if self._kind == "click":
-            self._build_click_fields(form)
         if self._kind == "move":
+            self._build_position_fields(form)
             self._build_move_fields(form)
-        if self._kind in ("key_press", "key_hold", "key_release"):
-            self._build_key_fields(form)
         if self._kind == "delay":
             self._build_delay_fields(form)
         if self._kind != "delay":
@@ -242,32 +313,13 @@ class ActionConfigDialog(QDialog):
         layout.addWidget(buttons)
 
     def _build_position_fields(self, form: QFormLayout) -> None:
-        self._cursor_check = QCheckBox("Use current cursor position at run time")
-        # Only clicks support cursor-position mode; moves need a target.
-        if self._kind == "click":
-            form.addRow(self._cursor_check)
-            self._cursor_check.toggled.connect(self._on_cursor_toggled)
-        else:
-            self._cursor_check.setVisible(False)
-
         self._x_spin = QSpinBox()
         self._x_spin.setRange(0, 100000)
         self._y_spin = QSpinBox()
         self._y_spin.setRange(0, 100000)
         form.addRow("X:", self._x_spin)
         form.addRow("Y:", self._y_spin)
-
-        self._capture_btn = QPushButton("Capture position (F2)")
-        self._capture_btn.clicked.connect(self._start_capture)
-        form.addRow(self._capture_btn)
-
-    def _build_click_fields(self, form: QFormLayout) -> None:
-        self._button_combo = QComboBox()
-        self._button_combo.addItems(["left", "right", "middle"])
-        form.addRow("Button:", self._button_combo)
-
-        self._double_check = QCheckBox("Double click")
-        form.addRow(self._double_check)
+        form.addRow(self._build_capture_button())
 
     def _build_move_fields(self, form: QFormLayout) -> None:
         self._speed_spin = QSpinBox()
@@ -279,45 +331,6 @@ class ActionConfigDialog(QDialog):
         self._smooth_check.setChecked(True)
         form.addRow(self._smooth_check)
 
-    def _build_key_fields(self, form: QFormLayout) -> None:
-        self._key_capture = KeyCaptureButton()
-        form.addRow("Key:", self._key_capture)
-
-        # Modifier check-boxes for every key kind (press, hold and release).
-        self._mod_checks = {}
-        mod_row = QHBoxLayout()
-        for mod in _MODIFIERS:
-            cb = QCheckBox(mod)
-            self._mod_checks[mod] = cb
-            mod_row.addWidget(cb)
-        container = QWidget()
-        container.setLayout(mod_row)
-        form.addRow("Modifiers:", container)
-
-        # Key hold: choose to hold until released/stopped, or for a fixed time.
-        if self._kind == "key_hold":
-            self._hold_mode = QButtonGroup(self)
-            self._hold_until_radio = QRadioButton("Hold until released / stopped")
-            self._hold_until_radio.setChecked(True)
-            self._hold_for_radio = QRadioButton("Hold for a fixed time")
-            self._hold_mode.addButton(self._hold_until_radio)
-            self._hold_mode.addButton(self._hold_for_radio)
-
-            self._hold_ms = QSpinBox()
-            self._hold_ms.setRange(1, 3_600_000)
-            self._hold_ms.setValue(1000)
-            self._hold_ms.setSuffix(" ms")
-            self._hold_ms.setEnabled(False)
-            self._hold_for_radio.toggled.connect(self._hold_ms.setEnabled)
-
-            form.addRow(self._hold_until_radio)
-            for_row = QHBoxLayout()
-            for_row.addWidget(self._hold_for_radio)
-            for_row.addWidget(self._hold_ms)
-            for_container = QWidget()
-            for_container.setLayout(for_row)
-            form.addRow(for_container)
-
     def _build_delay_fields(self, form: QFormLayout) -> None:
         self._duration_spin = QSpinBox()
         self._duration_spin.setRange(0, 3600000)
@@ -325,90 +338,17 @@ class ActionConfigDialog(QDialog):
         self._duration_spin.setSuffix(" ms")
         form.addRow("Duration:", self._duration_spin)
 
-    def _build_delay_after_fields(self, form: QFormLayout) -> None:
-        """Optional delay after this action completes, before the next step.
-
-        Lets a step (click/move/key) carry its own trailing delay instead of
-        always needing a separate standalone Delay step after it.
-        """
-        self._delay_after_check = QCheckBox("Add delay after this step")
-        form.addRow(self._delay_after_check)
-
-        self._delay_after_ms = QSpinBox()
-        self._delay_after_ms.setRange(0, 3600000)
-        self._delay_after_ms.setValue(0)
-        self._delay_after_ms.setSuffix(" ms")
-        self._delay_after_ms.setEnabled(False)
-        form.addRow("Delay duration:", self._delay_after_ms)
-
-        self._delay_after_variance = QSpinBox()
-        self._delay_after_variance.setRange(0, 100)
-        self._delay_after_variance.setValue(5)
-        self._delay_after_variance.setSuffix(" %")
-        self._delay_after_variance.setEnabled(False)
-        form.addRow("Delay variance:", self._delay_after_variance)
-
-        self._delay_after_check.toggled.connect(self._delay_after_ms.setEnabled)
-        self._delay_after_check.toggled.connect(self._delay_after_variance.setEnabled)
-
     # -- load existing ------------------------------------------------------
 
     def _load_existing(self, action: Action) -> None:
-        if isinstance(action, ClickAction):
-            self._cursor_check.setChecked(action.use_cursor_position)
-            self._x_spin.setValue(action.x)
-            self._y_spin.setValue(action.y)
-            idx = self._button_combo.findText(action.button)
-            if idx >= 0:
-                self._button_combo.setCurrentIndex(idx)
-            self._double_check.setChecked(action.action_type == ActionType.DOUBLE_CLICK)
-            self._on_cursor_toggled(action.use_cursor_position)
-        elif isinstance(action, MouseMoveAction):
+        if isinstance(action, MouseMoveAction):
             self._x_spin.setValue(action.x)
             self._y_spin.setValue(action.y)
             self._speed_spin.setValue(action.speed)
             self._smooth_check.setChecked(action.smooth)
-        elif isinstance(action, KeyPressAction):
-            self._key_capture.set_key(action.key)
-            for mod, cb in self._mod_checks.items():
-                cb.setChecked(mod in action.modifiers)
+            self._load_delay_after(action)
         elif isinstance(action, DelayAction):
             self._duration_spin.setValue(action.duration_ms)
-
-        if self._kind != "delay":
-            delay_after = getattr(action, "delay_after_ms", 0)
-            if delay_after:
-                self._delay_after_check.setChecked(True)
-                self._delay_after_ms.setValue(delay_after)
-                self._delay_after_variance.setValue(getattr(action, "delay_after_variance_percent", 5))
-
-    # -- position capture ---------------------------------------------------
-
-    def _on_cursor_toggled(self, use_cursor: bool) -> None:
-        for w in (self._x_spin, self._y_spin, self._capture_btn):
-            w.setEnabled(not use_cursor)
-
-    def _start_capture(self) -> None:
-        """Capture a screen position with the full-screen overlay.
-
-        Reliable, pure-Qt: the user clicks the target position on a translucent
-        always-on-top overlay; the click never reaches the underlying window.
-        """
-        from src.ui.widgets.capture_overlay import CapturePanel
-
-        self._overlay = CapturePanel(self)
-        self._overlay.captured.connect(self._on_position_captured)
-        self._overlay.cancelled.connect(self._on_position_cancelled)
-        self._overlay.show()
-
-    def _on_position_captured(self, x: int, y: int) -> None:
-        # Spin-box minimum is 0, so any negative multi-monitor coord clamps.
-        self._x_spin.setValue(x)
-        self._y_spin.setValue(y)
-        self._overlay = None
-
-    def _on_position_cancelled(self) -> None:
-        self._overlay = None
 
     # -- result -------------------------------------------------------------
 
@@ -426,48 +366,13 @@ class ActionConfigDialog(QDialog):
     def _build_action(self) -> Action:
         if self._kind == "delay":
             return DelayAction(duration_ms=self._duration_spin.value())
-
-        delay_after_ms = self._delay_after_ms.value() if self._delay_after_check.isChecked() else 0
-        delay_after_variance = self._delay_after_variance.value()
-
-        if self._kind == "click":
-            use_cursor = self._cursor_check.isChecked()
-            action_type = ActionType.DOUBLE_CLICK if self._double_check.isChecked() else ActionType.CLICK
-            return ClickAction(
-                x=0 if use_cursor else self._x_spin.value(),
-                y=0 if use_cursor else self._y_spin.value(),
-                button=self._button_combo.currentText(),
-                use_cursor_position=use_cursor,
-                action_type=action_type,
-                delay_after_ms=delay_after_ms,
-                delay_after_variance_percent=delay_after_variance,
-            )
         if self._kind == "move":
             return MouseMoveAction(
                 x=self._x_spin.value(),
                 y=self._y_spin.value(),
                 speed=self._speed_spin.value(),
                 smooth=self._smooth_check.isChecked(),
-                delay_after_ms=delay_after_ms,
-                delay_after_variance_percent=delay_after_variance,
-            )
-        if self._kind in ("key_press", "key_hold", "key_release"):
-            key = self._key_capture.key().strip()
-            if not key:
-                raise ValueError("No key captured — click 'Key' and press a key")
-            mods = [m for m, cb in self._mod_checks.items() if cb.isChecked()]
-            if self._kind == "key_press":
-                action_type = ActionType.KEY_PRESS
-            elif self._kind == "key_hold":
-                action_type = ActionType.KEY_HOLD
-            else:
-                action_type = ActionType.KEY_RELEASE
-            return KeyPressAction(
-                key=key,
-                modifiers=mods,
-                action_type=action_type,
-                delay_after_ms=delay_after_ms,
-                delay_after_variance_percent=delay_after_variance,
+                **self._delay_after_kwargs(),
             )
         raise ValueError(f"Unknown action kind: {self._kind}")
 
@@ -475,25 +380,262 @@ class ActionConfigDialog(QDialog):
         return self._result
 
     def result_actions(self) -> List[Action]:
+        return [self._result] if self._result is not None else []
+
+
+class InputActionDialog(QDialog, _PositionCaptureMixin, _DelayAfterFieldsMixin):
+    """Unified dialog for a macro's "input" step: a keyboard key or a mouse
+    button, pressed once, held (until released/stopped or for a fixed
+    time), or released — with optional ctrl/alt/shift modifiers alongside
+    it. Replaces the old separate Click / Key press / Key hold / Key
+    release dialogs, which were the same underlying gesture (press an
+    input, optionally hold it) with a different device.
+
+    Only the fields relevant to the current Key-vs-Mouse and Press/Hold/
+    Release choice are shown — the rest stay hidden via QFormLayout row
+    visibility rather than cluttering the dialog with inactive fields.
+    """
+
+    def __init__(self, existing: Optional[Action] = None, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._logger = get_logger("action_dialog")
+        self._existing = existing
+        self._result: Optional[Action] = None
+        self._overlay = None
+
+        self.setWindowTitle("Configure: Input")
+        self.setModal(True)
+        self.setMinimumWidth(380)
+
+        self._build_ui()
+        if existing is not None:
+            self._load_existing(existing)
+        self._update_visibility()
+
+    # -- UI construction ----------------------------------------------------
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        self._form = QFormLayout()
+        layout.addLayout(self._form)
+        form = self._form
+
+        # Source: keyboard key or mouse button.
+        self._key_radio = QRadioButton("Keyboard key")
+        self._mouse_radio = QRadioButton("Mouse button")
+        self._key_radio.setChecked(True)
+        source_group = QButtonGroup(self)
+        source_group.addButton(self._key_radio)
+        source_group.addButton(self._mouse_radio)
+        source_row = QHBoxLayout()
+        source_row.addWidget(self._key_radio)
+        source_row.addWidget(self._mouse_radio)
+        source_container = QWidget()
+        source_container.setLayout(source_row)
+        form.addRow("Input:", source_container)
+
+        self._key_capture = KeyCaptureButton()
+        form.addRow(self._key_capture)
+
+        self._button_combo = QComboBox()
+        self._button_combo.addItems(["left", "right", "middle"])
+        form.addRow("Mouse button:", self._button_combo)
+
+        # Position (mouse only — a keyboard key has no target).
+        self._cursor_check = QCheckBox("Use current cursor position at run time")
+        form.addRow(self._cursor_check)
+        self._x_spin = QSpinBox()
+        self._x_spin.setRange(0, 100000)
+        self._y_spin = QSpinBox()
+        self._y_spin.setRange(0, 100000)
+        form.addRow("X:", self._x_spin)
+        form.addRow("Y:", self._y_spin)
+        self._capture_btn = self._build_capture_button()
+        form.addRow(self._capture_btn)
+
+        # Modifiers — apply to key or mouse input alike.
+        self._mod_checks = {}
+        mod_row = QHBoxLayout()
+        for mod in _MODIFIERS:
+            cb = QCheckBox(mod)
+            self._mod_checks[mod] = cb
+            mod_row.addWidget(cb)
+        mod_container = QWidget()
+        mod_container.setLayout(mod_row)
+        form.addRow("Modifiers:", mod_container)
+
+        # Double click (mouse + press-once only).
+        self._double_check = QCheckBox("Double click")
+        form.addRow(self._double_check)
+
+        # Press / Hold / Release.
+        self._press_radio = QRadioButton("Press once")
+        self._hold_radio = QRadioButton("Hold")
+        self._release_radio = QRadioButton("Release (a previously held key/button)")
+        self._press_radio.setChecked(True)
+        mode_group = QButtonGroup(self)
+        for b in (self._press_radio, self._hold_radio, self._release_radio):
+            mode_group.addButton(b)
+            form.addRow(b)
+
+        # Hold sub-mode: until released/stopped, or for a fixed time.
+        self._hold_until_radio = QRadioButton("Hold until released / stopped")
+        self._hold_for_radio = QRadioButton("Hold for a fixed time")
+        self._hold_until_radio.setChecked(True)
+        hold_mode_group = QButtonGroup(self)
+        hold_mode_group.addButton(self._hold_until_radio)
+        hold_mode_group.addButton(self._hold_for_radio)
+        form.addRow(self._hold_until_radio)
+
+        self._hold_ms = QSpinBox()
+        self._hold_ms.setRange(1, 3_600_000)
+        self._hold_ms.setValue(1000)
+        self._hold_ms.setSuffix(" ms")
+        self._hold_ms.setEnabled(False)
+        self._hold_for_radio.toggled.connect(self._hold_ms.setEnabled)
+        hold_for_row = QHBoxLayout()
+        hold_for_row.addWidget(self._hold_for_radio)
+        hold_for_row.addWidget(self._hold_ms)
+        self._hold_for_container = QWidget()
+        self._hold_for_container.setLayout(hold_for_row)
+        form.addRow(self._hold_for_container)
+
+        self._build_delay_after_fields(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        for w in (self._key_radio, self._mouse_radio, self._press_radio, self._hold_radio, self._release_radio, self._cursor_check):
+            w.toggled.connect(self._update_visibility)
+
+    def _update_visibility(self) -> None:
+        form = self._form
+        is_mouse = self._mouse_radio.isChecked()
+        is_hold = self._hold_radio.isChecked()
+        is_release = self._release_radio.isChecked()
+        use_cursor = self._cursor_check.isChecked()
+        show_position = is_mouse and not is_release
+
+        form.setRowVisible(self._key_capture, not is_mouse)
+        form.setRowVisible(self._button_combo, is_mouse)
+
+        form.setRowVisible(self._cursor_check, show_position)
+        form.setRowVisible(self._x_spin, show_position and not use_cursor)
+        form.setRowVisible(self._y_spin, show_position and not use_cursor)
+        form.setRowVisible(self._capture_btn, show_position and not use_cursor)
+
+        form.setRowVisible(self._double_check, is_mouse and not is_hold and not is_release)
+
+        form.setRowVisible(self._hold_until_radio, is_hold)
+        form.setRowVisible(self._hold_for_container, is_hold)
+
+    # -- load existing ------------------------------------------------------
+
+    def _load_existing(self, action: Action) -> None:
+        if isinstance(action, KeyPressAction):
+            self._key_radio.setChecked(True)
+            self._key_capture.set_key(action.key)
+            for mod, cb in self._mod_checks.items():
+                cb.setChecked(mod in action.modifiers)
+            if action.action_type == ActionType.KEY_HOLD:
+                self._hold_radio.setChecked(True)
+            elif action.action_type == ActionType.KEY_RELEASE:
+                self._release_radio.setChecked(True)
+            else:
+                self._press_radio.setChecked(True)
+        elif isinstance(action, ClickAction):
+            self._mouse_radio.setChecked(True)
+            self._cursor_check.setChecked(action.use_cursor_position)
+            self._x_spin.setValue(action.x)
+            self._y_spin.setValue(action.y)
+            idx = self._button_combo.findText(action.button)
+            if idx >= 0:
+                self._button_combo.setCurrentIndex(idx)
+            for mod, cb in self._mod_checks.items():
+                cb.setChecked(mod in action.modifiers)
+            self._double_check.setChecked(action.action_type == ActionType.DOUBLE_CLICK)
+            if action.action_type == ActionType.CLICK_HOLD:
+                self._hold_radio.setChecked(True)
+            elif action.action_type == ActionType.CLICK_RELEASE:
+                self._release_radio.setChecked(True)
+            else:
+                self._press_radio.setChecked(True)
+
+        self._load_delay_after(action)
+
+    # -- result -------------------------------------------------------------
+
+    def _on_accept(self) -> None:
+        try:
+            self._result = self._build_action()
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid action", str(e))
+            return
+        self.accept()
+
+    def reject(self) -> None:  # type: ignore[override]
+        super().reject()
+
+    def _build_action(self) -> Action:
+        mods = [m for m, cb in self._mod_checks.items() if cb.isChecked()]
+        delay_kwargs = self._delay_after_kwargs()
+
+        if self._key_radio.isChecked():
+            key = self._key_capture.key().strip()
+            if not key:
+                raise ValueError("No key captured — click 'Key' and press a key")
+            if self._release_radio.isChecked():
+                action_type = ActionType.KEY_RELEASE
+            elif self._hold_radio.isChecked():
+                action_type = ActionType.KEY_HOLD
+            else:
+                action_type = ActionType.KEY_PRESS
+            return KeyPressAction(key=key, modifiers=mods, action_type=action_type, **delay_kwargs)
+
+        is_release = self._release_radio.isChecked()
+        use_cursor = self._cursor_check.isChecked() and not is_release
+        if is_release:
+            action_type = ActionType.CLICK_RELEASE
+        elif self._hold_radio.isChecked():
+            action_type = ActionType.CLICK_HOLD
+        else:
+            action_type = ActionType.DOUBLE_CLICK if self._double_check.isChecked() else ActionType.CLICK
+        return ClickAction(
+            x=0 if (use_cursor or is_release) else self._x_spin.value(),
+            y=0 if (use_cursor or is_release) else self._y_spin.value(),
+            button=self._button_combo.currentText(),
+            modifiers=mods,
+            use_cursor_position=use_cursor,
+            action_type=action_type,
+            **delay_kwargs,
+        )
+
+    def result_action(self) -> Optional[Action]:
+        return self._result
+
+    def result_actions(self) -> List[Action]:
         """Return the action(s) this dialog produced.
 
-        Usually a single action, but a "hold for a fixed time" key-hold expands
-        into three visible steps — hold, delay, release — so the timed hold is
-        transparent and editable in the list.
+        Usually a single action, but "hold for a fixed time" expands into
+        three visible steps — hold, delay, release — so the timed hold is
+        transparent and editable in the list, for both keys and mouse
+        buttons.
         """
         if self._result is None:
             return []
-        if (
-            self._kind == "key_hold"
-            and getattr(self, "_hold_for_radio", None) is not None
-            and self._hold_for_radio.isChecked()
-        ):
-            hold: KeyPressAction = self._result  # type: ignore[assignment]
-            release = KeyPressAction(
-                key=hold.key,
-                modifiers=list(hold.modifiers),
-                action_type=ActionType.KEY_RELEASE,
-            )
+        if self._hold_radio.isChecked() and self._hold_for_radio.isChecked():
+            hold = self._result
+            if isinstance(hold, KeyPressAction):
+                release: Action = KeyPressAction(
+                    key=hold.key, modifiers=list(hold.modifiers), action_type=ActionType.KEY_RELEASE,
+                )
+            else:
+                release = ClickAction(
+                    x=hold.x, y=hold.y, button=hold.button, modifiers=list(hold.modifiers),
+                    use_cursor_position=hold.use_cursor_position, action_type=ActionType.CLICK_RELEASE,
+                )
             return [hold, DelayAction(duration_ms=self._hold_ms.value()), release]
         return [self._result]
 
@@ -535,11 +677,42 @@ class RealisticMovementDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class ActionTreeWidget(QTreeWidget):
+    """QTreeWidget with internal drag-and-drop reordering/reparenting.
+
+    Steps — including a whole loop block with everything inside it — can be
+    dragged to reorder them, or dropped onto a loop row to move them inside
+    it / dragged out to un-nest them. Qt performs the visual move itself;
+    this just emits `dropped` afterward so the owning page can resync its
+    model (self._actions) from the tree's new structure.
+    """
+
+    dropped = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().dropEvent(event)
+        self.dropped.emit()
+
+
 class MacroBuilderPage(QWidget):
     """Page for assembling a macro from an ordered list of actions."""
 
     save_requested = Signal()
     cancel_requested = Signal()
+
+    _UNDO_LIMIT = 20
+    # Second data role (alongside the path, at UserRole) storing a direct
+    # reference to the underlying model object on each tree row — used to
+    # rebuild self._actions after a drag-and-drop move, when the tree's
+    # structure changes without going through any of our own mutation code.
+    _OBJECT_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -549,6 +722,11 @@ class MacroBuilderPage(QWidget):
         self._actions: List[Action] = []
         self._macro_id: Optional[str] = None
         self._is_editing = False
+        # Snapshots of self._actions taken before each mutating op, for Undo.
+        # Covers the step list only (add/remove/move/duplicate/loop/ungroup/
+        # edit/realistic-movement/drag-drop) — not name/hotkey/repeat/
+        # randomization settings.
+        self._undo_stack: List[List[Action]] = []
 
         self._setup_ui()
         self._connect_signals()
@@ -590,7 +768,7 @@ class MacroBuilderPage(QWidget):
         # Action list + side controls
         list_row = QHBoxLayout()
 
-        self._action_list = QTreeWidget()
+        self._action_list = ActionTreeWidget()
         self._action_list.setObjectName("actionList")
         self._action_list.setHeaderHidden(True)
         self._action_list.setIndentation(18)
@@ -624,6 +802,10 @@ class MacroBuilderPage(QWidget):
         self._loop_btn = QPushButton("Loop selected…")
         self._ungroup_btn = QPushButton("Ungroup loop")
 
+        self._undo_btn = QPushButton("Undo")
+        self._undo_btn.setEnabled(False)
+        self._undo_btn.setToolTip("Undo the last change to the step list (Ctrl+Z)")
+
         button_grid = QGridLayout()
         button_grid.setSpacing(8)
         button_grid.addWidget(self._up_btn, 0, 0)
@@ -632,6 +814,7 @@ class MacroBuilderPage(QWidget):
         button_grid.addWidget(self._remove_btn, 1, 1)
         button_grid.addWidget(self._loop_btn, 2, 0)
         button_grid.addWidget(self._ungroup_btn, 2, 1)
+        button_grid.addWidget(self._undo_btn, 3, 0, 1, 2)
         side.addLayout(button_grid)
         side.addStretch()
 
@@ -703,9 +886,14 @@ class MacroBuilderPage(QWidget):
         self._realistic_btn.clicked.connect(self._on_realistic_movement)
         self._loop_btn.clicked.connect(self._on_loop_selected)
         self._ungroup_btn.clicked.connect(self._on_ungroup)
+        self._undo_btn.clicked.connect(self._on_undo)
+        self._action_list.dropped.connect(self._on_tree_dropped)
         self._loop_check.toggled.connect(lambda looped: self._repeat_spin.setEnabled(not looped))
         self._save_btn.clicked.connect(self._on_save)
         self._cancel_btn.clicked.connect(lambda: self.cancel_requested.emit())
+
+        undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        undo_shortcut.activated.connect(self._on_undo)
 
     # -- tree helpers ---------------------------------------------------------
     #
@@ -736,11 +924,16 @@ class MacroBuilderPage(QWidget):
                 bold.setBold(True)
                 node.setFont(0, bold)
                 node.setData(0, Qt.ItemDataRole.UserRole, path)
+                node.setData(0, self._OBJECT_ROLE, item)
                 self._add_tree_node(parent, node)
                 self._populate_tree(node, item.actions, path)
             else:
                 leaf = QTreeWidgetItem([summarize_action(item)])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, path)
+                leaf.setData(0, self._OBJECT_ROLE, item)
+                # A leaf step can't contain other steps — only accept drops
+                # that land beside it (as a sibling), not "into" it.
+                leaf.setFlags(leaf.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
                 self._add_tree_node(parent, leaf)
 
     @staticmethod
@@ -777,15 +970,69 @@ class MacroBuilderPage(QWidget):
             container = container[idx].actions
         return container
 
+    def _on_tree_dropped(self) -> None:
+        """Resync self._actions after a drag-and-drop move.
+
+        Qt's InternalMove drag-drop rearranges QTreeWidgetItems directly —
+        self._actions is untouched at this point, so this is still the
+        pre-drop state and the right moment to snapshot for Undo. Each item
+        still carries a reference to its original model object (_OBJECT_ROLE
+        survives the move), so rebuilding self._actions is just a matter of
+        walking the tree's new shape and reading those references back.
+        """
+        self._push_undo()
+        self._actions = self._read_tree_as_actions(self._action_list)
+        self._refresh_list()
+
+    def _read_tree_as_actions(self, parent) -> List:
+        """Rebuild a MacroItem list from the current tree structure under
+        `parent` (the QTreeWidget itself, or a QTreeWidgetItem), recursing
+        into loop rows and replacing their .actions with their new children.
+        """
+        is_root = isinstance(parent, QTreeWidget)
+        count = parent.topLevelItemCount() if is_root else parent.childCount()
+        get_child = parent.topLevelItem if is_root else parent.child
+
+        result: List = []
+        for i in range(count):
+            node = get_child(i)
+            obj = node.data(0, self._OBJECT_ROLE)
+            if isinstance(obj, LoopBlock):
+                obj.actions = self._read_tree_as_actions(node)
+            result.append(obj)
+        return result
+
+    # -- undo -----------------------------------------------------------------
+
+    def _push_undo(self) -> None:
+        """Snapshot the current step list before a mutation, so Undo can
+        restore it. Capped at _UNDO_LIMIT entries (oldest dropped first)."""
+        snapshot = [a.model_copy(deep=True) for a in self._actions]
+        self._undo_stack.append(snapshot)
+        if len(self._undo_stack) > self._UNDO_LIMIT:
+            self._undo_stack.pop(0)
+        self._undo_btn.setEnabled(True)
+
+    def _on_undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._actions = self._undo_stack.pop()
+        self._refresh_list()
+        self._undo_btn.setEnabled(bool(self._undo_stack))
+
     # -- action ops ---------------------------------------------------------
 
     def _on_add(self) -> None:
         kind = self._add_type_combo.currentData()
-        dialog = ActionConfigDialog(kind, parent=self)
+        if kind == "input":
+            dialog = InputActionDialog(parent=self)
+        else:
+            dialog = ActionConfigDialog(kind, parent=self)
         if dialog.exec() == QDialog.Accepted:
             new_actions = dialog.result_actions()
             if not new_actions:
                 return
+            self._push_undo()
             container, index, parent_path = self._add_insertion_point()
             container[index:index] = new_actions
             self._refresh_list(select_path=parent_path + [index + len(new_actions) - 1])
@@ -827,15 +1074,23 @@ class MacroBuilderPage(QWidget):
                 entry.count, 1, 1_000_000,
             )
             if ok:
+                self._push_undo()
                 entry.count = count
                 self._refresh_list(select_path=path)
             return
 
-        kind = self._kind_for_action(entry)
-        dialog = ActionConfigDialog(kind, existing=entry, parent=self)
+        dialog = self._dialog_for_existing(entry)
         if dialog.exec() == QDialog.Accepted and dialog.result_action() is not None:
+            self._push_undo()
             container[idx] = dialog.result_action()
             self._refresh_list(select_path=path)
+
+    def _dialog_for_existing(self, action: Action) -> QDialog:
+        if isinstance(action, (ClickAction, KeyPressAction)):
+            return InputActionDialog(existing=action, parent=self)
+        if isinstance(action, MouseMoveAction):
+            return ActionConfigDialog("move", existing=action, parent=self)
+        return ActionConfigDialog("delay", existing=action, parent=self)
 
     def _on_loop_selected(self) -> None:
         """Wrap the selected contiguous sibling rows into a loop block.
@@ -862,6 +1117,7 @@ class MacroBuilderPage(QWidget):
         if not ok:
             return
 
+        self._push_undo()
         container = self._container_for_path(parent_path + [indices[0]])
         start, end = indices[0], indices[-1]
         block = LoopBlock(count=count, actions=[a for a in container[start:end + 1]])
@@ -882,23 +1138,11 @@ class MacroBuilderPage(QWidget):
         if not isinstance(entry, LoopBlock):
             QMessageBox.information(self, "Ungroup", "Select a loop to ungroup.")
             return
+        self._push_undo()
         container[idx:idx + 1] = list(entry.actions)
         parent_path = path[:-1]
         select_path = (parent_path + [idx]) if entry.actions else (parent_path or None)
         self._refresh_list(select_path=select_path)
-
-    def _kind_for_action(self, action: Action) -> str:
-        if isinstance(action, ClickAction):
-            return "click"
-        if isinstance(action, MouseMoveAction):
-            return "move"
-        if isinstance(action, KeyPressAction):
-            if action.action_type == ActionType.KEY_HOLD:
-                return "key_hold"
-            if action.action_type == ActionType.KEY_RELEASE:
-                return "key_release"
-            return "key_press"
-        return "delay"
 
     def _move(self, delta: int) -> None:
         path = self._selected_path()
@@ -909,6 +1153,7 @@ class MacroBuilderPage(QWidget):
         new_idx = idx + delta
         if not (0 <= new_idx < len(container)):
             return
+        self._push_undo()
         container[idx], container[new_idx] = container[new_idx], container[idx]
         self._refresh_list(select_path=path[:-1] + [new_idx])
 
@@ -921,6 +1166,7 @@ class MacroBuilderPage(QWidget):
         # Deep-copy the item and give it (and any nested children, for a
         # loop block) a fresh id so the clone doesn't share identity with
         # its source.
+        self._push_undo()
         clone = container[idx].model_copy(deep=True)
         self._reassign_ids(clone)
         container.insert(idx + 1, clone)
@@ -939,6 +1185,7 @@ class MacroBuilderPage(QWidget):
             return
         container = self._container_for_path(path)
         idx = path[-1]
+        self._push_undo()
         container.pop(idx)
         parent_path = path[:-1]
         select_path = (parent_path + [min(idx, len(container) - 1)]) if container else (parent_path or None)
@@ -962,6 +1209,7 @@ class MacroBuilderPage(QWidget):
             return
         speed, account_for_loop = options
 
+        self._push_undo()
         self._actions, _ = self._insert_realistic_moves(self._actions, speed)
         if account_for_loop:
             self._connect_loop_ends(self._actions, speed)
@@ -1094,6 +1342,8 @@ class MacroBuilderPage(QWidget):
         self._repeat_delay_spin.setValue(0)
         self._random_check.setChecked(True)
         self._hotkey_input.set_hotkey("")
+        self._undo_stack = []
+        self._undo_btn.setEnabled(False)
         self._refresh_list()
 
     def set_macro_id(self, macro_id: Optional[str]) -> None:
@@ -1112,6 +1362,8 @@ class MacroBuilderPage(QWidget):
         self._title_label.setText("Edit Macro")
         self._name_input.setText(macro.name)
         self._actions = [a.model_copy(deep=True) for a in macro.actions]
+        self._undo_stack = []
+        self._undo_btn.setEnabled(False)
         looped = macro.repeat_count == 0
         self._loop_check.setChecked(looped)
         self._repeat_spin.setEnabled(not looped)

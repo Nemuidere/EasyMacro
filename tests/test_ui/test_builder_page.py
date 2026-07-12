@@ -21,7 +21,12 @@ from src.models.action import (
     LoopBlock,
 )
 from src.services.macro_service import MacroService
-from src.ui.pages.builder_page import MacroBuilderPage, summarize_action, ActionConfigDialog
+from src.ui.pages.builder_page import (
+    MacroBuilderPage,
+    summarize_action,
+    ActionConfigDialog,
+    InputActionDialog,
+)
 
 
 @pytest.fixture
@@ -58,6 +63,16 @@ def test_summaries_are_readable():
         KeyPressAction(key="shift", action_type=ActionType.KEY_RELEASE)
     )
     assert "Delay 500 ms" == summarize_action(DelayAction(duration_ms=500))
+    hold_summary = summarize_action(
+        ClickAction(x=1, y=2, button="right", action_type=ActionType.CLICK_HOLD)
+    )
+    assert "Hold" in hold_summary and "right" in hold_summary
+    release_summary = summarize_action(
+        ClickAction(x=1, y=2, button="right", action_type=ActionType.CLICK_RELEASE)
+    )
+    assert "Release" in release_summary and "right" in release_summary
+    # A hold/release summary must not be mistaken for an ordinary click.
+    assert "click" not in hold_summary.lower().split(" @ ")[0]
 
 
 def test_save_mixed_macro_round_trips(page, macro_service):
@@ -96,8 +111,8 @@ def test_edit_loads_existing_actions(page, macro_service):
 def test_add_appends_to_top_level_when_nothing_selected(page, monkeypatch):
     import src.ui.pages.builder_page as bm
     new_click = ClickAction(x=42, y=42)
-    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
-    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+    monkeypatch.setattr(bm.InputActionDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.InputActionDialog, "result_actions", lambda self: [new_click])
 
     page.reset()
     page._actions = [ClickAction(x=1, y=1)]
@@ -112,8 +127,8 @@ def test_add_appends_to_top_level_when_nothing_selected(page, monkeypatch):
 def test_add_inserts_after_selected_top_level_step(page, monkeypatch):
     import src.ui.pages.builder_page as bm
     new_click = ClickAction(x=42, y=42)
-    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
-    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+    monkeypatch.setattr(bm.InputActionDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.InputActionDialog, "result_actions", lambda self: [new_click])
 
     page.reset()
     page._actions = [ClickAction(x=1, y=1), ClickAction(x=2, y=2)]
@@ -132,8 +147,8 @@ def test_add_inserts_inside_selected_loop(page, monkeypatch):
     loop's own body, at the end."""
     import src.ui.pages.builder_page as bm
     new_click = ClickAction(x=42, y=42)
-    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
-    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+    monkeypatch.setattr(bm.InputActionDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.InputActionDialog, "result_actions", lambda self: [new_click])
 
     page.reset()
     page._actions = [LoopBlock(count=5, actions=[ClickAction(x=1, y=1)])]
@@ -151,8 +166,8 @@ def test_add_inserts_inside_selected_loop(page, monkeypatch):
 def test_add_inserts_after_selected_step_inside_loop(page, monkeypatch):
     import src.ui.pages.builder_page as bm
     new_click = ClickAction(x=42, y=42)
-    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
-    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+    monkeypatch.setattr(bm.InputActionDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.InputActionDialog, "result_actions", lambda self: [new_click])
 
     page.reset()
     page._actions = [LoopBlock(count=5, actions=[ClickAction(x=1, y=1), ClickAction(x=2, y=2)])]
@@ -172,8 +187,8 @@ def test_add_inserts_inside_nested_loop(page, monkeypatch):
     """Add works at any nesting depth, not just one level in."""
     import src.ui.pages.builder_page as bm
     new_click = ClickAction(x=42, y=42)
-    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
-    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+    monkeypatch.setattr(bm.InputActionDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.InputActionDialog, "result_actions", lambda self: [new_click])
 
     page.reset()
     page._actions = [
@@ -204,8 +219,8 @@ def test_edit_updates_click_nested_inside_loop(page, monkeypatch):
     when a loop's body was a single collapsed summary row)."""
     import src.ui.pages.builder_page as bm
     edited = ClickAction(x=999, y=888)
-    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
-    monkeypatch.setattr(bm.ActionConfigDialog, "result_action", lambda self: edited)
+    monkeypatch.setattr(bm.InputActionDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.InputActionDialog, "result_action", lambda self: edited)
 
     page.reset()
     page._actions = [LoopBlock(count=5, actions=[ClickAction(x=1, y=1), ClickAction(x=2, y=2)])]
@@ -220,7 +235,8 @@ def test_edit_updates_click_nested_inside_loop(page, monkeypatch):
 
 
 def test_click_dialog_delay_after_round_trips(qapp):
-    d = ActionConfigDialog("click")
+    d = InputActionDialog()
+    d._mouse_radio.setChecked(True)
     d._x_spin.setValue(10)
     d._y_spin.setValue(20)
     d._delay_after_check.setChecked(True)
@@ -232,14 +248,15 @@ def test_click_dialog_delay_after_round_trips(qapp):
     assert action.delay_after_ms == 300
     assert action.delay_after_variance_percent == 15
 
-    reloaded = ActionConfigDialog("click", existing=action)
+    reloaded = InputActionDialog(existing=action)
     assert reloaded._delay_after_check.isChecked() is True
     assert reloaded._delay_after_ms.value() == 300
     assert reloaded._delay_after_variance.value() == 15
 
 
 def test_click_dialog_delay_after_defaults_to_zero_when_unchecked(qapp):
-    d = ActionConfigDialog("click")
+    d = InputActionDialog()
+    d._mouse_radio.setChecked(True)
     d._x_spin.setValue(10)
     d._y_spin.setValue(20)
     d._on_accept()
@@ -457,8 +474,9 @@ def test_duplicate_creates_distinct_action(page):
 
 
 def test_key_hold_with_modifiers(qapp):
-    d = ActionConfigDialog("key_hold")
+    d = InputActionDialog()
     d._key_capture.set_key("a")
+    d._hold_radio.setChecked(True)
     d._mod_checks["ctrl"].setChecked(True)
     d._mod_checks["shift"].setChecked(True)
     d._on_accept()
@@ -469,8 +487,9 @@ def test_key_hold_with_modifiers(qapp):
 
 
 def test_key_hold_for_duration_expands_to_three_steps(qapp):
-    d = ActionConfigDialog("key_hold")
+    d = InputActionDialog()
     d._key_capture.set_key("space")
+    d._hold_radio.setChecked(True)
     d._hold_for_radio.setChecked(True)
     d._hold_ms.setValue(750)
     d._on_accept()
@@ -658,3 +677,342 @@ def test_save_requires_name_and_actions(page, macro_service, monkeypatch):
     # No name -> should not save.
     page._on_save()
     assert macro_service.count() == 0
+
+
+# ---------------------------------------------------------------------------
+# InputActionDialog: unified key/mouse press/hold/release (round J).
+# ---------------------------------------------------------------------------
+
+def test_input_dialog_defaults_to_key_press(qapp):
+    d = InputActionDialog()
+    d._key_capture.set_key("a")
+    d._on_accept()
+    action = d.result_action()
+    assert isinstance(action, KeyPressAction)
+    assert action.action_type == ActionType.KEY_PRESS
+
+
+def test_input_dialog_key_release(qapp):
+    d = InputActionDialog()
+    d._key_capture.set_key("shift")
+    d._release_radio.setChecked(True)
+    d._on_accept()
+    action = d.result_action()
+    assert action.action_type == ActionType.KEY_RELEASE
+    assert action.key == "shift"
+
+
+def test_input_dialog_mouse_press_with_double_click(qapp):
+    d = InputActionDialog()
+    d._mouse_radio.setChecked(True)
+    d._x_spin.setValue(100)
+    d._y_spin.setValue(200)
+    d._button_combo.setCurrentText("right")
+    d._double_check.setChecked(True)
+    d._on_accept()
+    action = d.result_action()
+    assert isinstance(action, ClickAction)
+    assert action.action_type == ActionType.DOUBLE_CLICK
+    assert action.button == "right"
+    assert (action.x, action.y) == (100, 200)
+
+
+def test_input_dialog_mouse_cursor_position(qapp):
+    d = InputActionDialog()
+    d._mouse_radio.setChecked(True)
+    d._cursor_check.setChecked(True)
+    d._on_accept()
+    action = d.result_action()
+    assert action.use_cursor_position is True
+
+
+def test_input_dialog_mouse_hold(qapp):
+    d = InputActionDialog()
+    d._mouse_radio.setChecked(True)
+    d._button_combo.setCurrentText("middle")
+    d._x_spin.setValue(5)
+    d._y_spin.setValue(6)
+    d._mod_checks["ctrl"].setChecked(True)
+    d._hold_radio.setChecked(True)
+    d._on_accept()
+    action = d.result_action()
+    assert action.action_type == ActionType.CLICK_HOLD
+    assert action.button == "middle"
+    assert action.modifiers == ["ctrl"]
+
+
+def test_input_dialog_mouse_hold_for_duration_expands_to_three_steps(qapp):
+    d = InputActionDialog()
+    d._mouse_radio.setChecked(True)
+    d._button_combo.setCurrentText("left")
+    d._x_spin.setValue(1)
+    d._y_spin.setValue(2)
+    d._hold_radio.setChecked(True)
+    d._hold_for_radio.setChecked(True)
+    d._hold_ms.setValue(400)
+    d._on_accept()
+    actions = d.result_actions()
+    assert [a.action_type for a in actions] == [
+        ActionType.CLICK_HOLD,
+        ActionType.DELAY,
+        ActionType.CLICK_RELEASE,
+    ]
+    assert actions[1].duration_ms == 400
+    assert actions[2].button == "left"
+
+
+def test_input_dialog_mouse_release(qapp):
+    d = InputActionDialog()
+    d._mouse_radio.setChecked(True)
+    d._button_combo.setCurrentText("right")
+    d._release_radio.setChecked(True)
+    d._on_accept()
+    action = d.result_action()
+    assert action.action_type == ActionType.CLICK_RELEASE
+    assert action.button == "right"
+
+
+def test_input_dialog_key_requires_a_captured_key(qapp, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    # Missing input pops a modal warning; stub it so the test doesn't block.
+    monkeypatch.setattr(bm.QMessageBox, "warning", lambda *a, **k: None)
+
+    d = InputActionDialog()
+    d._on_accept()
+    assert d.result_action() is None  # rejected: no key captured, warning shown instead
+
+
+def test_input_dialog_loads_existing_key_hold(qapp):
+    existing = KeyPressAction(key="f5", modifiers=["alt"], action_type=ActionType.KEY_HOLD)
+    d = InputActionDialog(existing=existing)
+    assert d._key_radio.isChecked() is True
+    assert d._hold_radio.isChecked() is True
+    assert d._key_capture.key() == "f5"
+    assert d._mod_checks["alt"].isChecked() is True
+
+
+def test_input_dialog_loads_existing_mouse_release(qapp):
+    existing = ClickAction(x=0, y=0, button="right", action_type=ActionType.CLICK_RELEASE)
+    d = InputActionDialog(existing=existing)
+    assert d._mouse_radio.isChecked() is True
+    assert d._release_radio.isChecked() is True
+    assert d._button_combo.currentText() == "right"
+
+
+def test_input_dialog_row_visibility_follows_mode(qapp):
+    d = InputActionDialog()
+    # Default: key + press.
+    assert d._form.isRowVisible(d._key_capture) is True
+    assert d._form.isRowVisible(d._button_combo) is False
+    assert d._form.isRowVisible(d._x_spin) is False
+
+    d._mouse_radio.setChecked(True)
+    assert d._form.isRowVisible(d._key_capture) is False
+    assert d._form.isRowVisible(d._button_combo) is True
+    assert d._form.isRowVisible(d._x_spin) is True
+    assert d._form.isRowVisible(d._double_check) is True
+
+    d._hold_radio.setChecked(True)
+    assert d._form.isRowVisible(d._double_check) is False
+    assert d._form.isRowVisible(d._hold_until_radio) is True
+
+    d._release_radio.setChecked(True)
+    assert d._form.isRowVisible(d._x_spin) is False  # release needs no position
+    assert d._form.isRowVisible(d._hold_until_radio) is False
+
+
+def test_editing_existing_click_opens_input_dialog(page):
+    """Double-clicking a Click step must open InputActionDialog, not the
+    old (now move/delay-only) ActionConfigDialog."""
+    click = ClickAction(x=1, y=1)
+    dialog = page._dialog_for_existing(click)
+    assert isinstance(dialog, InputActionDialog)
+
+
+def test_editing_existing_move_opens_action_config_dialog(page):
+    move = MouseMoveAction(x=1, y=1)
+    dialog = page._dialog_for_existing(move)
+    assert isinstance(dialog, ActionConfigDialog)
+
+
+# ---------------------------------------------------------------------------
+# Drag-and-drop reordering / reparenting (round J).
+# ---------------------------------------------------------------------------
+
+def test_drop_reconciliation_moves_step_into_loop(page):
+    """Simulates what Qt's InternalMove drag-drop produces (a QTreeWidgetItem
+    reparented into another), then checks _on_tree_dropped correctly rebuilds
+    self._actions to match — this is the part we're responsible for; the
+    actual mouse-drag gesture is Qt's own well-tested machinery."""
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1), LoopBlock(count=5, actions=[ClickAction(x=2, y=2)])]
+    page._refresh_list()
+
+    moved_item = page._action_list.takeTopLevelItem(0)  # the Click(1,1) row
+    loop_item = page._action_list.topLevelItem(0)  # now the only top-level row
+    loop_item.addChild(moved_item)
+
+    page._on_tree_dropped()
+
+    assert len(page._actions) == 1
+    loop = page._actions[0]
+    assert isinstance(loop, LoopBlock)
+    assert [(a.x, a.y) for a in loop.actions] == [(2, 2), (1, 1)]
+
+
+def test_drop_reconciliation_moves_step_out_of_loop(page):
+    page.reset()
+    inner = ClickAction(x=9, y=9)
+    page._actions = [LoopBlock(count=5, actions=[ClickAction(x=1, y=1), inner])]
+    page._refresh_list()
+
+    loop_item = page._action_list.topLevelItem(0)
+    taken = loop_item.takeChild(1)  # the inner=Click(9,9) row
+    page._action_list.addTopLevelItem(taken)  # promote it to top level
+
+    page._on_tree_dropped()
+
+    assert len(page._actions) == 2
+    assert isinstance(page._actions[0], LoopBlock)
+    assert len(page._actions[0].actions) == 1
+    assert page._actions[1].x == 9
+
+
+def test_drop_reconciliation_preserves_moved_loops_children(page):
+    """Dragging a whole loop block (with its own body) must bring its
+    children along intact, not lose or flatten them."""
+    page.reset()
+    page._actions = [
+        ClickAction(x=1, y=1),
+        LoopBlock(count=3, actions=[ClickAction(x=2, y=2), ClickAction(x=3, y=3)]),
+    ]
+    page._refresh_list()
+
+    loop_item = page._action_list.takeTopLevelItem(1)
+    page._action_list.insertTopLevelItem(0, loop_item)  # reorder: loop first now
+
+    page._on_tree_dropped()
+
+    assert isinstance(page._actions[0], LoopBlock)
+    assert [(a.x, a.y) for a in page._actions[0].actions] == [(2, 2), (3, 3)]
+    assert page._actions[1].x == 1
+
+
+def test_drop_reconciliation_pushes_undo(page):
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1), LoopBlock(count=5, actions=[ClickAction(x=2, y=2)])]
+    page._refresh_list()
+
+    moved_item = page._action_list.takeTopLevelItem(0)
+    loop_item = page._action_list.topLevelItem(0)
+    loop_item.addChild(moved_item)
+
+    assert len(page._undo_stack) == 0
+    page._on_tree_dropped()
+    assert len(page._undo_stack) == 1
+
+
+# ---------------------------------------------------------------------------
+# Undo (round J).
+# ---------------------------------------------------------------------------
+
+def test_undo_restores_after_remove(page):
+    page.reset()
+    a = ClickAction(x=1, y=1)
+    page._actions = [a]
+    page._refresh_list(select_path=[0])
+
+    page._on_remove()
+    assert page._actions == []
+
+    page._on_undo()
+    assert page._actions == [a]
+
+
+def test_undo_restores_after_move(page):
+    page.reset()
+    a, b = ClickAction(x=1, y=1), ClickAction(x=2, y=2)
+    page._actions = [a, b]
+    page._refresh_list(select_path=[0])
+
+    page._move(1)
+    assert page._actions == [b, a]
+
+    page._on_undo()
+    assert page._actions == [a, b]
+
+
+def test_undo_button_enabled_state(page):
+    page.reset()
+    assert page._undo_btn.isEnabled() is False
+
+    page._actions = [ClickAction(x=1, y=1)]
+    page._refresh_list(select_path=[0])
+    page._on_remove()
+    assert page._undo_btn.isEnabled() is True
+
+    page._on_undo()
+    assert page._undo_btn.isEnabled() is False
+
+
+def test_undo_is_noop_when_stack_empty(page):
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1)]
+    page._on_undo()  # nothing to undo
+    assert len(page._actions) == 1
+
+
+def test_undo_stack_capped_at_limit(page):
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1)]
+    page._refresh_list(select_path=[0])
+
+    for _ in range(page._UNDO_LIMIT + 5):
+        page._push_undo()
+
+    assert len(page._undo_stack) == page._UNDO_LIMIT
+
+
+def test_undo_stack_cleared_on_reset(page):
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1)]
+    page._refresh_list(select_path=[0])
+    page._on_remove()
+    assert page._undo_stack
+
+    page.reset()
+    assert page._undo_stack == []
+    assert page._undo_btn.isEnabled() is False
+
+
+def test_undo_covers_loop_and_ungroup(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    monkeypatch.setattr(bm.QInputDialog, "getInt", lambda *a, **k: (5, True))
+
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1), ClickAction(x=2, y=2)]
+    page._refresh_list()
+    for r in (0, 1):
+        page._action_list.topLevelItem(r).setSelected(True)
+    page._on_loop_selected()
+    assert isinstance(page._actions[0], LoopBlock)
+
+    page._on_undo()
+    assert len(page._actions) == 2
+    assert all(isinstance(a, ClickAction) for a in page._actions)
+
+
+def test_undo_does_not_cover_settings_fields(page):
+    """Undo scope is the step list only — name/hotkey/repeat/randomization
+    aren't snapshotted, per the agreed scope."""
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1)]
+    page._refresh_list(select_path=[0])
+    page._name_input.setText("Changed name")
+
+    page._on_remove()
+    page._on_undo()
+
+    # The step list came back, but the name edit was never part of Undo.
+    assert page._actions
+    assert page._name_input.text() == "Changed name"

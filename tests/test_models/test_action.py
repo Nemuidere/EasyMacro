@@ -74,6 +74,20 @@ class TestClickAction:
         with pytest.raises(ValueError):
             ClickAction(x=100, y=200, delay_after_variance_percent=101)
 
+    def test_create_click_hold_action(self):
+        """Test creating a click-hold action (mirrors KeyPressAction's hold)."""
+        action = ClickAction(x=100, y=200, button="right", action_type=ActionType.CLICK_HOLD)
+
+        assert action.action_type == ActionType.CLICK_HOLD
+        assert action.button == "right"
+
+    def test_create_click_release_action(self):
+        """Test creating a click-release action."""
+        action = ClickAction(x=0, y=0, button="middle", action_type=ActionType.CLICK_RELEASE)
+
+        assert action.action_type == ActionType.CLICK_RELEASE
+        assert action.button == "middle"
+
 
 class TestDelayAction:
     """Tests for DelayAction model."""
@@ -222,6 +236,26 @@ class TestParseAction:
         """Test that parsing with unknown type raises ValueError."""
         with pytest.raises(ValueError, match="Unknown action type"):
             parse_action({"action_type": "unknown"})
+
+    def test_parse_click_hold_action(self):
+        """Test parsing a click-hold action."""
+        data = {"action_type": "click_hold", "x": 10, "y": 20, "button": "right"}
+
+        action = parse_action(data)
+
+        assert isinstance(action, ClickAction)
+        assert action.action_type == ActionType.CLICK_HOLD
+        assert action.button == "right"
+
+    def test_parse_click_release_action(self):
+        """Test parsing a click-release action."""
+        data = {"action_type": "click_release", "x": 0, "y": 0, "button": "middle"}
+
+        action = parse_action(data)
+
+        assert isinstance(action, ClickAction)
+        assert action.action_type == ActionType.CLICK_RELEASE
+        assert action.button == "middle"
 
 
 class TestLoopBlockNesting:

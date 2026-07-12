@@ -17,6 +17,8 @@ class ActionType(str, Enum):
     CLICK = "click"
     RIGHT_CLICK = "right_click"
     DOUBLE_CLICK = "double_click"
+    CLICK_HOLD = "click_hold"
+    CLICK_RELEASE = "click_release"
     DELAY = "delay"
     MOUSE_MOVE = "mouse_move"
     KEY_PRESS = "key_press"
@@ -254,6 +256,8 @@ def parse_action(data: dict) -> Action:
         ActionType.CLICK: ClickAction,
         ActionType.RIGHT_CLICK: ClickAction,
         ActionType.DOUBLE_CLICK: ClickAction,
+        ActionType.CLICK_HOLD: ClickAction,
+        ActionType.CLICK_RELEASE: ClickAction,
         ActionType.DELAY: DelayAction,
         ActionType.KEY_PRESS: KeyPressAction,
         ActionType.KEY_HOLD: KeyPressAction,

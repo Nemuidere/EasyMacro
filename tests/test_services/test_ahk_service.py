@@ -118,3 +118,46 @@ def test_click_failure_wrapped(service):
     service._ahk.click.side_effect = RuntimeError("boom")
     with pytest.raises(MacroExecutionError):
         service.click(1, 1)
+
+
+def test_mouse_down_moves_then_presses(service):
+    service.mouse_down(100, 200, button="right")
+
+    service._ahk.mouse_move.assert_called_once_with(100, 200, speed=0)
+    service._ahk.click.assert_called_once_with(button="right", direction="D")
+
+
+def test_mouse_down_negative_coords_raise(service):
+    with pytest.raises(ValueError):
+        service.mouse_down(-1, 5)
+    with pytest.raises(ValueError):
+        service.mouse_down(5, -1)
+
+
+def test_mouse_down_invalid_button_raises(service):
+    with pytest.raises(ValueError):
+        service.mouse_down(1, 1, button="scroll")
+
+
+def test_mouse_down_failure_wrapped(service):
+    service._ahk.click.side_effect = RuntimeError("boom")
+    with pytest.raises(MacroExecutionError):
+        service.mouse_down(1, 1)
+
+
+def test_mouse_up_releases_without_moving(service):
+    service.mouse_up(button="right")
+
+    service._ahk.mouse_move.assert_not_called()
+    service._ahk.click.assert_called_once_with(button="right", direction="U")
+
+
+def test_mouse_up_invalid_button_raises(service):
+    with pytest.raises(ValueError):
+        service.mouse_up(button="scroll")
+
+
+def test_mouse_up_failure_wrapped(service):
+    service._ahk.click.side_effect = RuntimeError("boom")
+    with pytest.raises(MacroExecutionError):
+        service.mouse_up()
