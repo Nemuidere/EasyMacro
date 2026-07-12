@@ -594,6 +594,10 @@ class MacroBuilderPage(QWidget):
         self._action_list.setObjectName("actionList")
         self._action_list.setHeaderHidden(True)
         self._action_list.setIndentation(18)
+        # Double-click always means "edit this step" (including opening the
+        # loop-count dialog for a loop row) — don't also toggle expand/
+        # collapse underneath it, which felt jarring together.
+        self._action_list.setExpandsOnDoubleClick(False)
         list_row.addWidget(self._action_list, 1)
 
         # Side controls: a compact 2-column grid instead of one tall stack of
@@ -780,9 +784,35 @@ class MacroBuilderPage(QWidget):
         dialog = ActionConfigDialog(kind, parent=self)
         if dialog.exec() == QDialog.Accepted:
             new_actions = dialog.result_actions()
-            if new_actions:
-                self._actions.extend(new_actions)
-                self._refresh_list(select_path=[len(self._actions) - 1])
+            if not new_actions:
+                return
+            container, index, parent_path = self._add_insertion_point()
+            container[index:index] = new_actions
+            self._refresh_list(select_path=parent_path + [index + len(new_actions) - 1])
+
+    def _add_insertion_point(self) -> tuple:
+        """Where a new step from "Add" should land: (container, index,
+        parent_path) — new items are inserted at container[index:index],
+        with parent_path the path prefix to that container (empty for the
+        top level).
+
+        - Nothing selected → end of the top-level list (old behaviour).
+        - A loop selected → end of *that loop's own body*, so you can select
+          a loop and keep adding steps into it.
+        - A step selected → right after it, in whatever list it's already
+          in (top-level or inside a loop), so repeatedly selecting the step
+          you just added and hitting Add builds a sequence in place.
+        """
+        path = self._selected_path()
+        if path is None:
+            return self._actions, len(self._actions), []
+
+        container = self._container_for_path(path)
+        idx = path[-1]
+        entry = container[idx]
+        if isinstance(entry, LoopBlock):
+            return entry.actions, len(entry.actions), path
+        return container, idx + 1, path[:-1]
 
     def _on_edit_item(self, item: QTreeWidgetItem, column: int = 0) -> None:
         path = list(item.data(0, Qt.ItemDataRole.UserRole))

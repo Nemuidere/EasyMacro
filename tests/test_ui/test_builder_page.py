@@ -93,6 +93,132 @@ def test_edit_loads_existing_actions(page, macro_service):
     assert len(fresh._actions) == 4
 
 
+def test_add_appends_to_top_level_when_nothing_selected(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    new_click = ClickAction(x=42, y=42)
+    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1)]
+    page._refresh_list()
+
+    page._on_add()
+
+    assert len(page._actions) == 2
+    assert page._actions[-1] is new_click
+
+
+def test_add_inserts_after_selected_top_level_step(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    new_click = ClickAction(x=42, y=42)
+    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+
+    page.reset()
+    page._actions = [ClickAction(x=1, y=1), ClickAction(x=2, y=2)]
+    page._refresh_list()
+    page._action_list.setCurrentItem(page._action_list.topLevelItem(0))
+
+    page._on_add()
+
+    assert len(page._actions) == 3
+    assert page._actions[1] is new_click
+    assert page._actions[2].x == 2
+
+
+def test_add_inserts_inside_selected_loop(page, monkeypatch):
+    """Selecting a loop row and hitting Add puts the new step inside that
+    loop's own body, at the end."""
+    import src.ui.pages.builder_page as bm
+    new_click = ClickAction(x=42, y=42)
+    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+
+    page.reset()
+    page._actions = [LoopBlock(count=5, actions=[ClickAction(x=1, y=1)])]
+    page._refresh_list()
+    page._action_list.setCurrentItem(page._action_list.topLevelItem(0))
+
+    page._on_add()
+
+    block = page._actions[0]
+    assert len(page._actions) == 1  # nothing new at the top level
+    assert len(block.actions) == 2
+    assert block.actions[-1] is new_click
+
+
+def test_add_inserts_after_selected_step_inside_loop(page, monkeypatch):
+    import src.ui.pages.builder_page as bm
+    new_click = ClickAction(x=42, y=42)
+    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+
+    page.reset()
+    page._actions = [LoopBlock(count=5, actions=[ClickAction(x=1, y=1), ClickAction(x=2, y=2)])]
+    page._refresh_list()
+    loop_item = page._action_list.topLevelItem(0)
+    page._action_list.setCurrentItem(loop_item.child(0))
+
+    page._on_add()
+
+    block = page._actions[0]
+    assert len(block.actions) == 3
+    assert block.actions[1] is new_click
+    assert block.actions[2].x == 2
+
+
+def test_add_inserts_inside_nested_loop(page, monkeypatch):
+    """Add works at any nesting depth, not just one level in."""
+    import src.ui.pages.builder_page as bm
+    new_click = ClickAction(x=42, y=42)
+    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.ActionConfigDialog, "result_actions", lambda self: [new_click])
+
+    page.reset()
+    page._actions = [
+        LoopBlock(count=10, actions=[
+            ClickAction(x=2, y=2),
+            LoopBlock(count=25, actions=[ClickAction(x=1, y=1)]),
+        ]),
+    ]
+    page._refresh_list()
+    outer_item = page._action_list.topLevelItem(0)
+    inner_loop_item = outer_item.child(1)
+    page._action_list.setCurrentItem(inner_loop_item)
+
+    page._on_add()
+
+    inner = page._actions[0].actions[1]
+    assert len(inner.actions) == 2
+    assert inner.actions[-1] is new_click
+
+
+def test_double_click_editing_does_not_also_toggle_expand(page):
+    assert page._action_list.expandsOnDoubleClick() is False
+
+
+def test_edit_updates_click_nested_inside_loop(page, monkeypatch):
+    """Regression: editing a click that's part of a loop must update the
+    click in place, not silently no-op (this was impossible pre-tree-view,
+    when a loop's body was a single collapsed summary row)."""
+    import src.ui.pages.builder_page as bm
+    edited = ClickAction(x=999, y=888)
+    monkeypatch.setattr(bm.ActionConfigDialog, "exec", lambda self: bm.QDialog.Accepted)
+    monkeypatch.setattr(bm.ActionConfigDialog, "result_action", lambda self: edited)
+
+    page.reset()
+    page._actions = [LoopBlock(count=5, actions=[ClickAction(x=1, y=1), ClickAction(x=2, y=2)])]
+    page._refresh_list()
+    loop_item = page._action_list.topLevelItem(0)
+    child_item = loop_item.child(0)
+
+    page._on_edit_item(child_item, 0)
+
+    assert page._actions[0].actions[0] is edited
+    assert page._actions[0].actions[1].x == 2
+
+
 def test_click_dialog_delay_after_round_trips(qapp):
     d = ActionConfigDialog("click")
     d._x_spin.setValue(10)
