@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QColor
 
 from src.core.logger import get_logger
 from src.models.macro import Macro
@@ -689,6 +689,13 @@ class ActionTreeWidget(QTreeWidget):
 
     dropped = Signal()
 
+    # Only loop rows ever have children, so an item's parent chain *is*
+    # exactly the loops it's nested inside. Cycled by nesting depth so a step
+    # inside two loops shows two differently-shaded guide lines, not one that
+    # could be mistaken for a single loop.
+    _LOOP_LINE_COLORS = [QColor("#8C8C8C"), QColor("#5A5A5A"), QColor("#BFBFBF")]
+    _LOOP_LINE_WIDTH = 2
+
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setDragEnabled(True)
@@ -699,6 +706,32 @@ class ActionTreeWidget(QTreeWidget):
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().dropEvent(event)
         self.dropped.emit()
+
+    def drawBranches(self, painter, rect, index) -> None:  # noqa: N802 (Qt override)
+        """Draw a vertical guide line down each loop-ancestor's indent column,
+        spanning the loop's whole body, so "which steps belong to which loop"
+        reads at a glance instead of only from indentation + a bold header."""
+        item = self.itemFromIndex(index)
+        ancestors = []
+        parent = item.parent() if item is not None else None
+        while parent is not None:
+            ancestors.append(parent)
+            parent = parent.parent()
+        ancestors.reverse()  # outermost loop first
+
+        if ancestors:
+            indent = self.indentation()
+            painter.save()
+            pen = painter.pen()
+            pen.setWidth(self._LOOP_LINE_WIDTH)
+            for depth in range(len(ancestors)):
+                pen.setColor(self._LOOP_LINE_COLORS[depth % len(self._LOOP_LINE_COLORS)])
+                painter.setPen(pen)
+                x = rect.left() + depth * indent + indent // 2
+                painter.drawLine(x, rect.top(), x, rect.bottom())
+            painter.restore()
+
+        super().drawBranches(painter, rect, index)
 
 
 class MacroBuilderPage(QWidget):
