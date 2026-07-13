@@ -10,8 +10,19 @@ from time import time
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from src.models.macro import Macro, MacroStatus
-from src.models.action import Action, ActionType, ClickAction, DelayAction, KeyPressAction, MouseMoveAction, flatten_items
+from src.models.action import (
+    Action,
+    ActionType,
+    ClickAction,
+    DelayAction,
+    ImageCondition,
+    KeyPressAction,
+    MouseMoveAction,
+    WaitAction,
+)
 from src.models.settings import RandomizationSettings
+from src.core import constants
+from src.core.macro_compiler import CondJump, Jump, WhileHeader, compile_program
 from src.core.randomization import RandomizationEngine
 from src.core.state import StateManager, AppState
 from src.core.event_bus import EventBus, get_event_bus
@@ -95,14 +106,21 @@ class MacroEngine(QObject):
         self._event_bus = get_event_bus()
         
         self._current_macro: Optional[Macro] = None
-        # The macro body flattened for execution: loop blocks are unrolled into
-        # a plain action sequence so the step machine stays simple.
-        self._flat_actions: list = []
+        # The macro body compiled for execution: fixed-count loop blocks are
+        # unrolled, if/while blocks become jump instructions (see
+        # macro_compiler). The step machine walks it with one integer index.
+        self._program: list = []
         self._current_action_index: int = 0
         self._execution_state: ExecutionState = ExecutionState.IDLE
         self._repeat_count: int = 0
         self._current_repeat: int = 0
         self._macro_start_time: float = 0.0
+
+        # Runtime state for control-flow instructions, keyed by instruction
+        # index (valid because loop unrolling gives every copy of a block its
+        # own index). Cleared on run start and on each outer repeat wrap.
+        self._while_state: dict[int, dict] = {}   # idx -> {"iterations", "start"}
+        self._wait_state: dict[int, float] = {}   # idx -> wait start time
 
         # Keys currently held down via KEY_HOLD actions. Tracked so they can be
         # force-released if the macro stops/errors mid-hold, preventing a key
@@ -155,11 +173,13 @@ class MacroEngine(QObject):
         self._logger.info(f"Starting macro: {macro.name}")
         
         self._current_macro = macro
-        self._flat_actions = flatten_items(macro.actions)
-        if not self._flat_actions:
+        self._program = compile_program(macro.actions)
+        if not self._program:
             raise ValueError(f"Macro '{macro.name}' has no runnable actions")
         self._current_action_index = 0
         self._current_repeat = 0
+        self._while_state = {}
+        self._wait_state = {}
         self._repeat_count = macro.repeat_count
         self._execution_state = ExecutionState.RUNNING
         self._macro_start_time = time()
@@ -278,21 +298,107 @@ class MacroEngine(QObject):
         if self._current_macro is None:
             return
 
-        actions = self._flat_actions
+        program = self._program
 
-        # Reached the end of the action sequence: decide whether to repeat.
-        if self._current_action_index >= len(actions):
+        # Reached the end of the instruction sequence: decide whether to repeat.
+        if self._current_action_index >= len(program):
             # repeat_count == 0 means repeat forever.
             if self._repeat_count == 0 or self._current_repeat < self._repeat_count - 1:
                 self._current_repeat += 1
                 self._current_action_index = 0
+                # A fresh pass must not inherit while-iteration counters or
+                # wait clocks from the previous one.
+                self._while_state.clear()
+                self._wait_state.clear()
                 self._schedule_step(self._current_macro.repeat_delay_ms)
             else:
                 self._complete_macro()
             return
 
-        action = actions[self._current_action_index]
-        self._execute_one(action)
+        instruction = program[self._current_action_index]
+        if isinstance(instruction, (Jump, CondJump, WhileHeader)):
+            self._execute_control(instruction)
+        else:
+            self._execute_one(instruction)
+
+    def _execute_control(self, instruction) -> None:
+        """Execute a control-flow instruction and schedule the next step.
+
+        Synthetic instructions (compiled from if/while blocks) emit no
+        action_started/action_completed signals — they aren't user-visible
+        steps, only the branch decisions between them.
+
+        Args:
+            instruction: A Jump, CondJump, or WhileHeader.
+        """
+        try:
+            if isinstance(instruction, Jump):
+                self._current_action_index = instruction.target
+                self._schedule_step(instruction.delay_ms)
+                return
+
+            if isinstance(instruction, CondJump):
+                if self._evaluate_condition(instruction.condition):
+                    self._logger.debug(f"If block {instruction.block_id}: condition true")
+                    self._current_action_index += 1
+                else:
+                    self._logger.debug(f"If block {instruction.block_id}: condition false")
+                    self._current_action_index = instruction.target
+                self._schedule_step(0)
+                return
+
+            # WhileHeader. Runtime state is keyed by this instruction's index
+            # and deleted on exit, so re-entry (from an outer loop unroll or a
+            # macro repeat) starts a fresh count/clock. Note: the timeout
+            # clock keeps running while the macro is paused.
+            index = self._current_action_index
+            state = self._while_state.setdefault(index, {"iterations": 0, "start": time()})
+
+            exit_reason = None
+            if instruction.max_iterations and state["iterations"] >= instruction.max_iterations:
+                exit_reason = f"max iterations ({instruction.max_iterations}) reached"
+            elif instruction.timeout_seconds and time() - state["start"] >= instruction.timeout_seconds:
+                exit_reason = f"timeout ({instruction.timeout_seconds}s) reached"
+            elif not self._evaluate_condition(instruction.condition):
+                exit_reason = "condition no longer holds"
+
+            if exit_reason:
+                self._logger.debug(f"While block {instruction.block_id}: exiting — {exit_reason}")
+                del self._while_state[index]
+                self._current_action_index = instruction.exit_target
+            else:
+                state["iterations"] += 1
+                self._current_action_index = index + 1
+            self._schedule_step(0)
+
+        except Exception as e:
+            self._handle_error(str(e))
+
+    def _evaluate_condition(self, condition: ImageCondition) -> bool:
+        """Evaluate a screen condition via an AHK image search.
+
+        Args:
+            condition: The condition to check.
+
+        Returns:
+            True if the condition holds (respecting ``negate``).
+
+        Raises:
+            ValueError: If the reference image file is missing.
+            MacroExecutionError: If the search fails.
+        """
+        from src.services.ahk_service import get_ahk_service
+
+        image_path = constants.get_assets_dir() / condition.image_file
+        found = get_ahk_service().image_search(
+            str(image_path),
+            condition.x1,
+            condition.y1,
+            condition.x2,
+            condition.y2,
+            color_variation=condition.color_variation,
+        ) is not None
+        return found != condition.negate
 
     def _execute_one(self, action: Action) -> None:
         """Execute a single action and schedule the next step.
@@ -306,9 +412,46 @@ class MacroEngine(QObject):
         """
         self._logger.debug(f"Executing action: {action.action_type}")
 
-        self.action_started.emit(action.id, action.action_type.value)
-
         try:
+            if isinstance(action, WaitAction):
+                # Self-rescheduling: the instruction pointer does NOT advance
+                # until the condition holds or the timeout passes; each poll
+                # re-enters this branch. action_started fires once per wait,
+                # not once per poll. The timeout clock keeps running while
+                # the macro is paused.
+                index = self._current_action_index
+                if index not in self._wait_state:
+                    self._wait_state[index] = time()
+                    self.action_started.emit(action.id, action.action_type.value)
+
+                if self._evaluate_condition(action.condition):
+                    del self._wait_state[index]
+                    self._current_action_index += 1
+                    self.action_completed.emit(action.id)
+                    self._schedule_step(0)
+                    return
+
+                timed_out = (
+                    action.timeout_ms > 0
+                    and (time() - self._wait_state[index]) * 1000 >= action.timeout_ms
+                )
+                if timed_out:
+                    del self._wait_state[index]
+                    if action.on_timeout == "error":
+                        raise MacroExecutionError(
+                            f"Timed out waiting for image '{action.condition.image_file}'"
+                        )
+                    self._logger.debug("Wait timed out; continuing per on_timeout setting")
+                    self._current_action_index += 1
+                    self.action_completed.emit(action.id)
+                    self._schedule_step(0)
+                    return
+
+                self._schedule_step(action.poll_interval_ms)
+                return
+
+            self.action_started.emit(action.id, action.action_type.value)
+
             if isinstance(action, DelayAction):
                 delay_ms = action.duration_ms
                 if self._current_macro.randomization_enabled:

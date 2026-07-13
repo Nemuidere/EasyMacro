@@ -40,7 +40,12 @@ class CapturePanel(QWidget):
     captured = Signal(int, int)
     cancelled = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        instruction: Optional[str] = None,
+        title: Optional[str] = None,
+    ):
         # Parented to the caller but shown as its own top-level window. It is
         # made application-modal so that when it is opened from an already-modal
         # dialog (the action config dialog), input still reaches it — otherwise
@@ -49,11 +54,12 @@ class CapturePanel(QWidget):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.setWindowTitle("Capture Position")
+        self.setWindowTitle(title or "Capture Position")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self._finished = False
         self._count = 0
+        self._instruction = instruction
 
         self._build_ui()
 
@@ -81,7 +87,8 @@ class CapturePanel(QWidget):
         layout.setSpacing(12)
 
         info = QLabel(
-            "Move the mouse over the target, click “Capture”,\n"
+            self._instruction
+            or "Move the mouse over the target, click “Capture”,\n"
             "then hold still during the countdown."
         )
         info.setWordWrap(True)

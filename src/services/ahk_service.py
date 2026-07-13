@@ -47,6 +47,13 @@ class AHKService:
         except Exception as e:  # pragma: no cover - defensive
             self._logger.warning(f"Could not set AHK mouse coord mode to Screen: {e}")
 
+        # Same for pixel/image searches: region bounds passed to image_search
+        # must be screen-absolute to match captured screenshot coordinates.
+        try:
+            self._ahk.set_coord_mode("Pixel", "Screen")
+        except Exception as e:  # pragma: no cover - defensive
+            self._logger.warning(f"Could not set AHK pixel coord mode to Screen: {e}")
+
         self._logger.info("AHK service initialized successfully")
     
     def click(
@@ -278,6 +285,71 @@ class AHKService:
         except Exception as e:
             raise MacroExecutionError(f"Failed to get mouse position: {e}") from e
     
+    def image_search(
+        self,
+        image_path: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        color_variation: int = 0,
+    ) -> Optional[Tuple[int, int]]:
+        """Search for a reference image inside a screen-absolute rectangle.
+
+        Coordinates may be negative (secondary monitors left of / above the
+        primary). The search is blocking; keep regions tight so a single scan
+        stays fast.
+
+        Args:
+            image_path: Path to the reference image file.
+            x1: Region left edge (screen-absolute).
+            y1: Region top edge.
+            x2: Region right edge.
+            y2: Region bottom edge.
+            color_variation: Allowed per-channel color difference (0-255).
+
+        Returns:
+            (x, y) of the match's top-left corner, or None if not found.
+
+        Raises:
+            ValueError: If the path is empty, the file is missing, or the
+                variation is out of range.
+            MacroExecutionError: If the AHK search itself fails.
+        """
+        if not image_path:
+            raise ValueError("Image path cannot be empty")
+        # Pre-check existence: AHK reports an unreadable image file through an
+        # ambiguous error path, so fail with a clear message before calling it.
+        if not Path(image_path).exists():
+            raise ValueError(f"Reference image not found: {image_path}")
+        if not 0 <= color_variation <= 255:
+            raise ValueError(f"Color variation must be 0-255, got {color_variation}")
+
+        if x1 > x2:
+            x1, x2 = x2, x1
+        if y1 > y2:
+            y1, y2 = y2, y1
+
+        self._logger.debug(
+            f"Image search for {image_path} in ({x1}, {y1})-({x2}, {y2}), variation {color_variation}"
+        )
+
+        try:
+            result = self._ahk.image_search(
+                image_path,
+                upper_bound=(x1, y1),
+                lower_bound=(x2, y2),
+                color_variation=color_variation if color_variation > 0 else None,
+                coord_mode="Screen",
+            )
+        except Exception as e:
+            self._logger.error(f"Image search failed: {e}")
+            raise MacroExecutionError(f"Image search failed: {e}") from e
+
+        if result is None:
+            return None
+        return (result.x, result.y)
+
     def sleep(self, milliseconds: int) -> None:
         """Sleep for a specified duration.
         

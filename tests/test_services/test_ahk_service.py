@@ -27,11 +27,13 @@ def service(monkeypatch):
 
 
 def test_sets_screen_coord_mode_on_init(monkeypatch):
-    # A freshly constructed service must pin AHK mouse coords to Screen so
-    # clicks are absolute, not relative to the active window.
+    # A freshly constructed service must pin AHK mouse AND pixel coords to
+    # Screen so clicks and image searches are absolute, not relative to the
+    # active window.
     monkeypatch.setattr(ahk_module, "AHK", MagicMock)
     svc = AHKService()
-    svc._ahk.set_coord_mode.assert_called_with("Mouse", "Screen")
+    svc._ahk.set_coord_mode.assert_any_call("Mouse", "Screen")
+    svc._ahk.set_coord_mode.assert_any_call("Pixel", "Screen")
 
 
 def test_click_moves_then_clicks(service):
@@ -161,3 +163,77 @@ def test_mouse_up_failure_wrapped(service):
     service._ahk.click.side_effect = RuntimeError("boom")
     with pytest.raises(MacroExecutionError):
         service.mouse_up()
+
+
+class TestImageSearch:
+    """Contract tests for the image_search wrapper."""
+
+    @pytest.fixture
+    def ref_image(self, tmp_path):
+        path = tmp_path / "ref.png"
+        path.write_bytes(b"fake png")
+        return str(path)
+
+    def test_found_returns_coordinates(self, service, ref_image):
+        service._ahk.image_search.return_value = SimpleNamespace(x=150, y=220)
+
+        assert service.image_search(ref_image, 100, 200, 300, 260) == (150, 220)
+
+    def test_not_found_returns_none(self, service, ref_image):
+        service._ahk.image_search.return_value = None
+
+        assert service.image_search(ref_image, 100, 200, 300, 260) is None
+
+    def test_kwargs_forwarded(self, service, ref_image):
+        service._ahk.image_search.return_value = None
+
+        service.image_search(ref_image, 100, 200, 300, 260, color_variation=30)
+
+        kwargs = service._ahk.image_search.call_args.kwargs
+        assert service._ahk.image_search.call_args.args == (ref_image,)
+        assert kwargs["upper_bound"] == (100, 200)
+        assert kwargs["lower_bound"] == (300, 260)
+        assert kwargs["color_variation"] == 30
+        assert kwargs["coord_mode"] == "Screen"
+
+    def test_zero_variation_passed_as_none(self, service, ref_image):
+        service._ahk.image_search.return_value = None
+
+        service.image_search(ref_image, 0, 0, 10, 10, color_variation=0)
+
+        assert service._ahk.image_search.call_args.kwargs["color_variation"] is None
+
+    def test_swapped_corners_normalized(self, service, ref_image):
+        service._ahk.image_search.return_value = None
+
+        service.image_search(ref_image, 300, 260, 100, 200)
+
+        kwargs = service._ahk.image_search.call_args.kwargs
+        assert kwargs["upper_bound"] == (100, 200)
+        assert kwargs["lower_bound"] == (300, 260)
+
+    def test_negative_region_coords_allowed(self, service, ref_image):
+        service._ahk.image_search.return_value = None
+
+        service.image_search(ref_image, -1920, -50, -100, 500)
+
+        assert service._ahk.image_search.call_args.kwargs["upper_bound"] == (-1920, -50)
+
+    def test_missing_file_raises_before_ahk(self, service):
+        with pytest.raises(ValueError, match="not found"):
+            service.image_search("/nowhere/ref.png", 0, 0, 10, 10)
+        service._ahk.image_search.assert_not_called()
+
+    def test_empty_path_raises(self, service):
+        with pytest.raises(ValueError):
+            service.image_search("", 0, 0, 10, 10)
+
+    def test_variation_out_of_range_raises(self, service, ref_image):
+        with pytest.raises(ValueError):
+            service.image_search(ref_image, 0, 0, 10, 10, color_variation=256)
+
+    def test_ahk_failure_wrapped(self, service, ref_image):
+        service._ahk.image_search.side_effect = RuntimeError("boom")
+
+        with pytest.raises(MacroExecutionError):
+            service.image_search(ref_image, 0, 0, 10, 10)

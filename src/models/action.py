@@ -5,8 +5,8 @@ Defines the different types of actions a macro can perform.
 """
 
 from enum import Enum
-from typing import Optional
-from pydantic import Field, field_validator
+from typing import Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.models.base import EasyMacroBaseModel
 
@@ -25,6 +25,7 @@ class ActionType(str, Enum):
     KEY_HOLD = "key_hold"
     KEY_RELEASE = "key_release"
     SCROLL = "scroll"
+    WAIT_FOR_IMAGE = "wait_for_image"
 
 
 class ClickAction(EasyMacroBaseModel):
@@ -180,8 +181,83 @@ class MouseMoveAction(EasyMacroBaseModel):
     )
 
 
+class ImageCondition(BaseModel):
+    """A screen condition: "this reference image appears inside this region".
+
+    Embedded value object used by IfBlock/WhileBlock/WaitAction — not itself a
+    macro item. The reference image is a screenshot the user captured in the
+    builder, stored as a PNG under the assets dir (see
+    ``src.core.constants.get_assets_dir``); only the filename is persisted.
+
+    Coordinates are screen-absolute and may be negative (a monitor left of or
+    above the primary one has negative screen coords).
+
+    Attributes:
+        image_file: Reference image filename inside the assets dir.
+        x1: Region left edge (screen-absolute).
+        y1: Region top edge.
+        x2: Region right edge.
+        y2: Region bottom edge.
+        color_variation: Per-channel color tolerance (0-255) when matching pixels.
+        negate: If True the condition means "image NOT found".
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    image_file: str = Field(min_length=1, description="Reference image filename in the assets dir")
+    x1: int = Field(description="Region left edge (screen-absolute)")
+    y1: int = Field(description="Region top edge (screen-absolute)")
+    x2: int = Field(description="Region right edge (screen-absolute)")
+    y2: int = Field(description="Region bottom edge (screen-absolute)")
+    color_variation: int = Field(default=20, ge=0, le=255, description="Per-channel color tolerance")
+    negate: bool = Field(default=False, description="True = condition is 'image NOT found'")
+
+    @model_validator(mode="after")
+    def _normalize_rect(self) -> "ImageCondition":
+        """Normalize swapped corners and reject a zero-area region."""
+        if self.x1 == self.x2 or self.y1 == self.y2:
+            raise ValueError("Condition region must have a non-zero area")
+        # Bypass validate_assignment (each assignment would re-run this
+        # validator on a half-swapped rect).
+        if self.x1 > self.x2:
+            x1, x2 = self.x2, self.x1
+            object.__setattr__(self, "x1", x1)
+            object.__setattr__(self, "x2", x2)
+        if self.y1 > self.y2:
+            y1, y2 = self.y2, self.y1
+            object.__setattr__(self, "y1", y1)
+            object.__setattr__(self, "y2", y2)
+        return self
+
+
+class WaitAction(EasyMacroBaseModel):
+    """Action that pauses the macro until a screen condition is met.
+
+    Polls the condition every ``poll_interval_ms`` without blocking the UI.
+    "Wait until the image appears" is a plain condition; "wait until it
+    disappears" is the same condition with ``negate=True``.
+
+    Note: the timeout clock keeps running while the macro is paused.
+
+    Attributes:
+        action_type: Always ActionType.WAIT_FOR_IMAGE.
+        condition: The screen condition to wait for.
+        poll_interval_ms: Delay between condition checks.
+        timeout_ms: Give up after this long (0 = wait forever).
+        on_timeout: What to do on timeout: continue the macro or stop with an error.
+    """
+
+    action_type: ActionType = Field(default=ActionType.WAIT_FOR_IMAGE, frozen=True)
+    condition: ImageCondition
+    poll_interval_ms: int = Field(default=200, ge=20, description="Delay between condition checks")
+    timeout_ms: int = Field(default=0, ge=0, description="Give up after this long (0 = forever)")
+    on_timeout: Literal["continue", "error"] = Field(
+        default="error", description="On timeout: continue the macro or stop with an error"
+    )
+
+
 # Union type for all executable (leaf) actions
-Action = ClickAction | DelayAction | KeyPressAction | MouseMoveAction
+Action = ClickAction | DelayAction | KeyPressAction | MouseMoveAction | WaitAction
 
 
 class LoopBlock(EasyMacroBaseModel):
@@ -206,13 +282,124 @@ class LoopBlock(EasyMacroBaseModel):
     )
 
 
-# An item in a macro body is either a leaf action or a loop block. Loop blocks
-# can nest (see LoopBlock docstring), so this is a self-referencing type — the
-# forward reference above is resolved by the model_rebuild() call below, once
-# LoopBlock itself is fully defined.
-MacroItem = ClickAction | DelayAction | KeyPressAction | MouseMoveAction | LoopBlock
+class IfBlock(EasyMacroBaseModel):
+    """A conditional branch: run one body if a screen condition holds, else another.
+
+    The condition is evaluated once when execution reaches the block. Both
+    bodies may nest further blocks to any depth; an empty ``else_actions`` is
+    simply a no-op when the condition is false.
+
+    Attributes:
+        condition: The screen condition deciding which branch runs.
+        then_actions: Steps run when the condition is true.
+        else_actions: Steps run when the condition is false.
+    """
+
+    condition: ImageCondition
+    then_actions: list["MacroItem"] = Field(
+        default_factory=list, description="Steps run when the condition is true"
+    )
+    else_actions: list["MacroItem"] = Field(
+        default_factory=list, description="Steps run when the condition is false"
+    )
+
+
+class WhileBlock(EasyMacroBaseModel):
+    """A loop that repeats its body while a screen condition holds.
+
+    The condition is re-evaluated before every pass, with at least
+    ``check_interval_ms`` between re-checks so a fast/empty body can't hammer
+    the screen search. Optional caps guard against a condition that never
+    turns false; the global stop hotkey always works regardless.
+
+    Note: the timeout clock keeps running while the macro is paused.
+
+    Attributes:
+        condition: The screen condition checked before each pass.
+        actions: The loop body.
+        timeout_seconds: Give up after this long (0 = unlimited).
+        max_iterations: Stop after this many passes (0 = unlimited).
+        check_interval_ms: Minimum delay between condition re-checks.
+    """
+
+    condition: ImageCondition
+    actions: list["MacroItem"] = Field(default_factory=list, description="The loop body")
+    timeout_seconds: int = Field(default=0, ge=0, description="Give up after this long (0 = unlimited)")
+    max_iterations: int = Field(default=0, ge=0, description="Stop after this many passes (0 = unlimited)")
+    check_interval_ms: int = Field(default=100, ge=0, description="Minimum delay between condition re-checks")
+
+
+# An item in a macro body is either a leaf action or a container block (loop /
+# if / while). Containers can nest (see LoopBlock docstring), so these are
+# self-referencing types — the forward references above are resolved by the
+# model_rebuild() calls below, once MacroItem itself is fully defined.
+#
+# Discrimination on load relies on extra="forbid" plus full model_dump()s:
+# each model's dump always carries a key the others forbid (action_type for
+# leaves, count for LoopBlock, then_actions/else_actions for IfBlock,
+# condition+actions for WhileBlock). Never switch persistence to
+# exclude_defaults, and always include a distinguishing key in hand-written
+# dicts (a bare {"condition": ...} is ambiguous between If/While/Wait).
+MacroItem = (
+    ClickAction
+    | DelayAction
+    | KeyPressAction
+    | MouseMoveAction
+    | WaitAction
+    | LoopBlock
+    | IfBlock
+    | WhileBlock
+)
 
 LoopBlock.model_rebuild()
+IfBlock.model_rebuild()
+WhileBlock.model_rebuild()
+
+
+def is_container(item) -> bool:
+    """Return True if the item is a block that contains other macro items."""
+    return isinstance(item, (LoopBlock, IfBlock, WhileBlock))
+
+
+def child_lists(item) -> list[tuple[str, list]]:
+    """The child item lists of a container, as (label, list) pairs.
+
+    Returns an empty list for leaf actions. This is the single place that
+    knows which blocks have which bodies — use it instead of isinstance
+    chains when recursing through a macro's item tree.
+
+    Args:
+        item: A MacroItem.
+
+    Returns:
+        [("body", actions)] for LoopBlock/WhileBlock,
+        [("then", then_actions), ("else", else_actions)] for IfBlock,
+        [] for leaf actions.
+    """
+    if isinstance(item, (LoopBlock, WhileBlock)):
+        return [("body", item.actions)]
+    if isinstance(item, IfBlock):
+        return [("then", item.then_actions), ("else", item.else_actions)]
+    return []
+
+
+def collect_image_files(items: list) -> set[str]:
+    """All reference-image filenames referenced anywhere in an item tree.
+
+    Args:
+        items: A list of MacroItems (a macro body).
+
+    Returns:
+        The set of ImageCondition.image_file values found at any depth.
+    """
+    files: set[str] = set()
+    for item in items:
+        condition = getattr(item, "condition", None)
+        if isinstance(condition, ImageCondition):
+            files.add(condition.image_file)
+        for _, child_items in child_lists(item):
+            files |= collect_image_files(child_items)
+    return files
 
 
 def flatten_items(items: list) -> list:
@@ -264,6 +451,7 @@ def parse_action(data: dict) -> Action:
         ActionType.KEY_RELEASE: KeyPressAction,
         ActionType.MOUSE_MOVE: MouseMoveAction,
         ActionType.SCROLL: ClickAction,
+        ActionType.WAIT_FOR_IMAGE: WaitAction,
     }
     
     if action_type not in action_map:

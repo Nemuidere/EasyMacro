@@ -595,3 +595,290 @@ def test_stop_releases_held_mouse_button(make_engine):
 
     ahk.mouse_up.assert_called_once_with("right")
     assert engine._held_mouse_buttons == set()
+
+
+class TestScreenConditionControlFlow:
+    """If/While/Wait execution driven by mocked image_search results.
+
+    The reference image file itself is never touched here — the mocked AHK
+    service's image_search return value (coords or None) decides branches.
+    """
+
+    @staticmethod
+    def _cond(negate=False):
+        from src.models.action import ImageCondition
+        return ImageCondition(
+            image_file="ref.png", x1=0, y1=0, x2=10, y2=10, negate=negate
+        )
+
+    def test_if_true_runs_then_branch_only(self, make_engine):
+        from src.models.action import IfBlock
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = (5, 5)
+        macro = _macro([
+            IfBlock(
+                condition=self._cond(),
+                then_actions=[ClickAction(x=1, y=1)],
+                else_actions=[ClickAction(x=2, y=2)],
+            ),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(80)
+
+        assert ahk.click.call_count == 1
+        assert ahk.click.call_args.args[:2] == (1, 1)
+        assert not engine.is_running()
+
+    def test_if_false_runs_else_branch_only(self, make_engine):
+        from src.models.action import IfBlock
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = None
+        macro = _macro([
+            IfBlock(
+                condition=self._cond(),
+                then_actions=[ClickAction(x=1, y=1)],
+                else_actions=[ClickAction(x=2, y=2)],
+            ),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(80)
+
+        assert ahk.click.call_count == 1
+        assert ahk.click.call_args.args[:2] == (2, 2)
+
+    def test_if_false_without_else_skips_block(self, make_engine):
+        from src.models.action import IfBlock
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = None
+        macro = _macro([
+            IfBlock(condition=self._cond(), then_actions=[ClickAction(x=1, y=1)]),
+            ClickAction(x=9, y=9),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(80)
+
+        assert ahk.click.call_count == 1
+        assert ahk.click.call_args.args[:2] == (9, 9)
+
+    def test_negated_condition_inverts_branching(self, make_engine):
+        from src.models.action import IfBlock
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = None  # not found + negate -> true
+        macro = _macro([
+            IfBlock(
+                condition=self._cond(negate=True),
+                then_actions=[ClickAction(x=1, y=1)],
+                else_actions=[ClickAction(x=2, y=2)],
+            ),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(80)
+
+        assert ahk.click.call_args.args[:2] == (1, 1)
+
+    def test_condition_passes_region_and_variation_to_service(self, make_engine, monkeypatch, tmp_path):
+        from src.models.action import IfBlock, ImageCondition
+        from src.core import constants as constants_module
+        engine, ahk, state = make_engine()
+        monkeypatch.setattr(constants_module, "get_assets_dir", lambda: tmp_path)
+        ahk.image_search.return_value = None
+        cond = ImageCondition(
+            image_file="ref.png", x1=-100, y1=20, x2=300, y2=260, color_variation=42
+        )
+        macro = _macro([IfBlock(condition=cond)])
+
+        engine.run_macro(macro)
+        QTest.qWait(80)
+
+        args = ahk.image_search.call_args.args
+        assert args[0] == str(tmp_path / "ref.png")
+        assert args[1:] == (-100, 20, 300, 260)
+        assert ahk.image_search.call_args.kwargs["color_variation"] == 42
+
+    def test_while_repeats_until_condition_false(self, make_engine):
+        from src.models.action import WhileBlock
+        engine, ahk, state = make_engine()
+        ahk.image_search.side_effect = [(1, 1), (1, 1), None]
+        macro = _macro([
+            WhileBlock(
+                condition=self._cond(),
+                actions=[ClickAction(x=1, y=1)],
+                check_interval_ms=0,
+            ),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(150)
+
+        assert ahk.click.call_count == 2
+        assert ahk.image_search.call_count == 3
+        assert not engine.is_running()
+
+    def test_while_max_iterations_cap(self, make_engine):
+        from src.models.action import WhileBlock
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = (1, 1)  # always found
+        macro = _macro([
+            WhileBlock(
+                condition=self._cond(),
+                actions=[ClickAction(x=1, y=1)],
+                max_iterations=3,
+                check_interval_ms=0,
+            ),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(150)
+
+        assert ahk.click.call_count == 3
+        assert not engine.is_running()
+
+    def test_while_timeout_cap(self, make_engine):
+        from src.models.action import WhileBlock
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = (1, 1)  # never turns false
+        macro = _macro([
+            WhileBlock(
+                condition=self._cond(),
+                actions=[DelayAction(duration_ms=30)],
+                timeout_seconds=1,
+                check_interval_ms=0,
+            ),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(1400)
+
+        assert not engine.is_running()
+
+    def test_while_state_resets_across_outer_repeat(self, make_engine):
+        from src.models.action import WhileBlock
+        engine, ahk, state = make_engine()
+        # Always found; max_iterations=1 exits each entry by cap after one
+        # pass WITHOUT re-evaluating the condition, so each macro repeat
+        # consumes exactly one search and one click.
+        ahk.image_search.return_value = (1, 1)
+        macro = _macro(
+            [
+                WhileBlock(
+                    condition=self._cond(),
+                    actions=[ClickAction(x=1, y=1)],
+                    max_iterations=1,
+                    check_interval_ms=0,
+                ),
+            ],
+            repeat_count=2,
+        )
+
+        engine.run_macro(macro)
+        QTest.qWait(200)
+
+        # max_iterations=1 per entry: if the iteration counter leaked across
+        # the repeat wrap, the second pass would exit immediately by cap with
+        # only 1 total click.
+        assert ahk.click.call_count == 2
+        assert ahk.image_search.call_count == 2
+        assert not engine.is_running()
+
+    def test_wait_polls_until_found(self, make_engine):
+        from src.models.action import WaitAction
+        engine, ahk, state = make_engine()
+        ahk.image_search.side_effect = [None, None, (1, 1)]
+        macro = _macro([
+            WaitAction(condition=self._cond(), poll_interval_ms=20),
+            ClickAction(x=9, y=9),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(300)
+
+        assert ahk.image_search.call_count == 3
+        assert ahk.click.call_count == 1
+        assert not engine.is_running()
+
+    def test_wait_timeout_continue_proceeds(self, make_engine):
+        from src.models.action import WaitAction
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = None  # never appears
+        macro = _macro([
+            WaitAction(
+                condition=self._cond(),
+                poll_interval_ms=20,
+                timeout_ms=100,
+                on_timeout="continue",
+            ),
+            ClickAction(x=9, y=9),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(400)
+
+        assert ahk.click.call_count == 1
+        assert not engine.is_running()
+        assert state.get() == AppState.IDLE
+
+    def test_wait_timeout_error_stops_macro_and_releases_keys(self, make_engine):
+        from src.models.action import WaitAction
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = None
+        errors = []
+        macro = _macro([
+            KeyPressAction(key="shift", action_type=ActionType.KEY_HOLD),
+            WaitAction(
+                condition=self._cond(),
+                poll_interval_ms=20,
+                timeout_ms=100,
+                on_timeout="error",
+            ),
+            ClickAction(x=9, y=9),
+        ])
+
+        engine, ahk, state = engine, ahk, state
+        engine.macro_error.connect(lambda mid, msg: errors.append(msg))
+        ahk.image_search.return_value = None
+
+        engine.run_macro(macro)
+        QTest.qWait(400)
+
+        assert errors and "Timed out" in errors[0]
+        assert ahk.click.call_count == 0
+        ahk.key_up.assert_any_call("shift")  # held key force-released
+        assert state.get() == AppState.ERROR
+
+    def test_wait_emits_action_started_once(self, make_engine):
+        from src.models.action import WaitAction
+        engine, ahk, state = make_engine()
+        ahk.image_search.side_effect = [None, None, (1, 1)]
+        started = []
+        wait = WaitAction(condition=self._cond(), poll_interval_ms=20)
+        macro = _macro([wait])
+
+        engine.action_started.connect(lambda aid, atype: started.append(aid))
+        engine.run_macro(macro)
+        QTest.qWait(300)
+
+        assert started.count(wait.id) == 1
+
+    def test_stop_mid_wait_goes_idle(self, make_engine):
+        from src.models.action import WaitAction
+        engine, ahk, state = make_engine()
+        ahk.image_search.return_value = None
+        macro = _macro([
+            WaitAction(condition=self._cond(), poll_interval_ms=20),
+        ])
+
+        engine.run_macro(macro)
+        QTest.qWait(60)
+        assert engine.is_running()
+
+        engine.stop_macro()
+        searches = ahk.image_search.call_count
+        QTest.qWait(100)
+
+        assert not engine.is_running()
+        assert state.get() == AppState.IDLE
+        assert ahk.image_search.call_count == searches  # no stray polls

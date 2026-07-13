@@ -36,6 +36,11 @@ def get_macros_path() -> Path:
     return get_data_dir() / "macros.json"
 
 
+def get_assets_dir() -> Path:
+    """Absolute path to the reference-image assets dir (see :func:`get_data_dir`)."""
+    return get_data_dir() / "assets"
+
+
 def get_stats_path() -> Path:
     """Absolute path to the stats file (see :func:`get_data_dir`)."""
     return get_data_dir() / "stats.json"

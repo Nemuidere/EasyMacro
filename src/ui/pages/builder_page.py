@@ -30,12 +30,14 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QDialog,
     QDialogButtonBox,
+    QMenu,
     QMessageBox,
     QInputDialog,
     QAbstractItemView,
     QScrollArea,
+    QTreeWidgetItemIterator,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPoint
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QColor
 
 from src.core.logger import get_logger
@@ -45,22 +47,41 @@ from src.models.action import (
     ActionType,
     ClickAction,
     DelayAction,
+    IfBlock,
     KeyPressAction,
-    MouseMoveAction,
     LoopBlock,
+    MouseMoveAction,
+    WaitAction,
+    WhileBlock,
+    child_lists,
+    is_container,
 )
 from src.services.macro_service import get_macro_service
+from src.ui.pages.builder_dialogs import (
+    IfBlockDialog,
+    WaitForImageDialog,
+    WhileBlockDialog,
+)
 from src.ui.widgets.hotkey_input import HotkeyInput
 
 
-# Action kinds offered in the "Add action" dropdown. "input" covers keyboard
-# keys AND mouse buttons (press/hold/release) in one unified dialog — those
-# turned out to be the same underlying gesture with a different device.
-# Move and Delay aren't a "press an input" gesture, so they stay separate.
+# Step kinds offered in the "Add step" menu. "input" covers keyboard keys AND
+# mouse buttons (press/hold/release) in one unified dialog — those turned out
+# to be the same underlying gesture with a different device. Move, Delay and
+# Wait aren't a "press an input" gesture, so they stay separate.
 ACTION_KINDS = [
-    ("input", "Input (key / mouse click)"),
-    ("move", "Move mouse"),
-    ("delay", "Delay"),
+    ("input", "Input (key / mouse click)…"),
+    ("move", "Move mouse…"),
+    ("delay", "Delay…"),
+    ("wait", "Wait for image…"),
+]
+
+# Container blocks the "Add step" menu can insert empty (they can also be
+# created by wrapping a selection, via the tree's context menu).
+BLOCK_KINDS = [
+    ("loop", "Loop…"),
+    ("if", "If image…"),
+    ("while", "While image…"),
 ]
 
 _MODIFIERS = ("ctrl", "alt", "shift")
@@ -183,6 +204,12 @@ def summarize_action(action: Action) -> str:
             base = f"Press '{combo}'"
     elif isinstance(action, DelayAction):
         return f"Delay {action.duration_ms} ms"
+    elif isinstance(action, WaitAction):
+        what = "gone" if action.condition.negate else "appears"
+        base = f"Wait until image {what}  ·  {_region_text(action.condition)}"
+        if action.timeout_ms:
+            base += f"  ·  ≤{action.timeout_ms / 1000:g}s"
+        return base
     else:
         return "Unknown action"
 
@@ -190,6 +217,28 @@ def summarize_action(action: Action) -> str:
     if delay_after:
         base += f"  ·  +{delay_after}ms delay"
     return base
+
+
+def _region_text(condition) -> str:
+    return f"({condition.x1}, {condition.y1})–({condition.x2}, {condition.y2})"
+
+
+def summarize_block(block) -> str:
+    """One-line label for a container block's tree row."""
+    if isinstance(block, LoopBlock):
+        return f"⟳  Loop  ×{block.count}"
+    if isinstance(block, IfBlock):
+        what = "not found" if block.condition.negate else "found"
+        return f"⎇  If image {what}  ·  {_region_text(block.condition)}"
+    if isinstance(block, WhileBlock):
+        what = "not found" if block.condition.negate else "found"
+        base = f"⟲  While image {what}  ·  {_region_text(block.condition)}"
+        if block.max_iterations:
+            base += f"  ·  ≤{block.max_iterations}×"
+        if block.timeout_seconds:
+            base += f"  ·  ≤{block.timeout_seconds}s"
+        return base
+    return "Unknown block"
 
 
 class _PositionCaptureMixin:
@@ -689,12 +738,13 @@ class ActionTreeWidget(QTreeWidget):
 
     dropped = Signal()
 
-    # Only loop rows ever have children, so an item's parent chain *is*
-    # exactly the loops it's nested inside. Cycled by nesting depth so a step
-    # inside two loops shows two differently-shaded guide lines, not one that
-    # could be mistaken for a single loop.
-    _LOOP_LINE_COLORS = [QColor("#8C8C8C"), QColor("#5A5A5A"), QColor("#BFBFBF")]
-    _LOOP_LINE_WIDTH = 2
+    # Only container rows (loop/if/while — including an If's Then/Else
+    # headers) ever have children, so an item's parent chain *is* exactly the
+    # blocks it's nested inside. Cycled by nesting depth so a step inside two
+    # blocks shows two differently-shaded guide lines, not one that could be
+    # mistaken for a single block.
+    _BLOCK_LINE_COLORS = [QColor("#8C8C8C"), QColor("#5A5A5A"), QColor("#BFBFBF")]
+    _BLOCK_LINE_WIDTH = 2
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -723,9 +773,9 @@ class ActionTreeWidget(QTreeWidget):
             indent = self.indentation()
             painter.save()
             pen = painter.pen()
-            pen.setWidth(self._LOOP_LINE_WIDTH)
+            pen.setWidth(self._BLOCK_LINE_WIDTH)
             for depth in range(len(ancestors)):
-                pen.setColor(self._LOOP_LINE_COLORS[depth % len(self._LOOP_LINE_COLORS)])
+                pen.setColor(self._BLOCK_LINE_COLORS[depth % len(self._BLOCK_LINE_COLORS)])
                 painter.setPen(pen)
                 x = rect.left() + depth * indent + indent // 2
                 painter.drawLine(x, rect.top(), x, rect.bottom())
@@ -746,6 +796,10 @@ class MacroBuilderPage(QWidget):
     # rebuild self._actions after a drag-and-drop move, when the tree's
     # structure changes without going through any of our own mutation code.
     _OBJECT_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+    # Third role marking an If block's "Then"/"Else" header rows (value is
+    # the branch name). Header rows aren't steps: ops skip them, but they
+    # accept drops and their _OBJECT_ROLE points at the owning IfBlock.
+    _BRANCH_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -811,17 +865,21 @@ class MacroBuilderPage(QWidget):
         self._action_list.setExpandsOnDoubleClick(False)
         list_row.addWidget(self._action_list, 1)
 
-        # Side controls: a compact 2-column grid instead of one tall stack of
-        # buttons, so the panel needs roughly half the vertical space (the
-        # scroll area above is the safety net for whatever's left over).
+        # Side controls, kept slim: one "Add step" menu button plus the
+        # everyday step ops. Wrapping into Loop/If/While, Ungroup and Edit
+        # live in the tree's right-click context menu instead of eating
+        # panel space.
         side = QVBoxLayout()
-        self._add_type_combo = QComboBox()
-        for kind, label in ACTION_KINDS:
-            self._add_type_combo.addItem(label, kind)
-        side.addWidget(self._add_type_combo)
 
-        self._add_btn = QPushButton("Add")
+        self._add_btn = QPushButton("Add step  ▾")
         self._add_btn.setObjectName("primaryButton")
+        add_menu = QMenu(self._add_btn)
+        for kind, label in ACTION_KINDS:
+            add_menu.addAction(label, lambda k=kind: self._on_add(k))
+        add_menu.addSeparator()
+        for kind, label in BLOCK_KINDS:
+            add_menu.addAction(label, lambda k=kind: self._on_add(k))
+        self._add_btn.setMenu(add_menu)
         side.addWidget(self._add_btn)
 
         side.addSpacing(10)
@@ -830,10 +888,6 @@ class MacroBuilderPage(QWidget):
         self._dup_btn = QPushButton("Duplicate")
         self._remove_btn = QPushButton("Remove")
         self._remove_btn.setObjectName("dangerButton")
-        # Loop controls: select one or more contiguous rows, then "Loop …" wraps
-        # them into a repeat block; "Ungroup" expands a loop back to its steps.
-        self._loop_btn = QPushButton("Loop selected…")
-        self._ungroup_btn = QPushButton("Ungroup loop")
 
         self._undo_btn = QPushButton("Undo")
         self._undo_btn.setEnabled(False)
@@ -845,11 +899,13 @@ class MacroBuilderPage(QWidget):
         button_grid.addWidget(self._down_btn, 0, 1)
         button_grid.addWidget(self._dup_btn, 1, 0)
         button_grid.addWidget(self._remove_btn, 1, 1)
-        button_grid.addWidget(self._loop_btn, 2, 0)
-        button_grid.addWidget(self._ungroup_btn, 2, 1)
-        button_grid.addWidget(self._undo_btn, 3, 0, 1, 2)
+        button_grid.addWidget(self._undo_btn, 2, 0, 1, 2)
         side.addLayout(button_grid)
         side.addStretch()
+
+        # Right-click context menu on the tree: edit/wrap/ungroup ops.
+        self._action_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._action_list.customContextMenuRequested.connect(self._on_context_menu)
 
         # Allow selecting a contiguous range of sibling rows (at any nesting
         # depth) to group into a loop.
@@ -910,15 +966,13 @@ class MacroBuilderPage(QWidget):
         outer_layout.addLayout(btn_row)
 
     def _connect_signals(self) -> None:
-        self._add_btn.clicked.connect(self._on_add)
+        # (The Add button opens its QMenu itself; kinds route to _on_add.)
         self._action_list.itemDoubleClicked.connect(self._on_edit_item)
         self._up_btn.clicked.connect(lambda: self._move(-1))
         self._down_btn.clicked.connect(lambda: self._move(1))
         self._dup_btn.clicked.connect(self._on_duplicate)
         self._remove_btn.clicked.connect(self._on_remove)
         self._realistic_btn.clicked.connect(self._on_realistic_movement)
-        self._loop_btn.clicked.connect(self._on_loop_selected)
-        self._ungroup_btn.clicked.connect(self._on_ungroup)
         self._undo_btn.clicked.connect(self._on_undo)
         self._action_list.dropped.connect(self._on_tree_dropped)
         self._loop_check.toggled.connect(lambda looped: self._repeat_spin.setEnabled(not looped))
@@ -946,18 +1000,37 @@ class MacroBuilderPage(QWidget):
             if item is not None:
                 self._action_list.setCurrentItem(item)
 
-    def _populate_tree(self, parent, items: List, path_prefix: List[int]) -> None:
+    def _populate_tree(self, parent, items: List, path_prefix: List) -> None:
         """Recursively build tree rows for `items` under `parent` (either the
-        QTreeWidget itself, for the top level, or a QTreeWidgetItem)."""
+        QTreeWidget itself, for the top level, or a QTreeWidgetItem).
+
+        Loop/While rows hold their body directly as children. An If row holds
+        exactly two locked "Then"/"Else" header rows, each holding that
+        branch's steps — the headers can't be dragged away, but they accept
+        drops (that's how steps move into a branch)."""
         for i, item in enumerate(items):
             path = path_prefix + [i]
-            if isinstance(item, LoopBlock):
-                node = QTreeWidgetItem([f"⟳  Loop  ×{item.count}"])
-                bold = node.font(0)
-                bold.setBold(True)
-                node.setFont(0, bold)
-                node.setData(0, Qt.ItemDataRole.UserRole, path)
-                node.setData(0, self._OBJECT_ROLE, item)
+            if isinstance(item, IfBlock):
+                node = self._make_block_node(item, path)
+                # A drop "between children" targets the parent row, so
+                # disabling drops on the If row itself is what stops steps
+                # landing beside the Then/Else headers.
+                node.setFlags(node.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
+                self._add_tree_node(parent, node)
+                for branch, body in child_lists(item):
+                    header = QTreeWidgetItem([branch.capitalize()])
+                    italic = header.font(0)
+                    italic.setItalic(True)
+                    header.setFont(0, italic)
+                    header.setForeground(0, QColor("#8C8C8C"))
+                    header.setFlags(header.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+                    header.setData(0, Qt.ItemDataRole.UserRole, path + [branch])
+                    header.setData(0, self._OBJECT_ROLE, item)
+                    header.setData(0, self._BRANCH_ROLE, branch)
+                    node.addChild(header)
+                    self._populate_tree(header, body, path + [branch])
+            elif is_container(item):  # LoopBlock / WhileBlock
+                node = self._make_block_node(item, path)
                 self._add_tree_node(parent, node)
                 self._populate_tree(node, item.actions, path)
             else:
@@ -969,6 +1042,15 @@ class MacroBuilderPage(QWidget):
                 leaf.setFlags(leaf.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
                 self._add_tree_node(parent, leaf)
 
+    def _make_block_node(self, block, path: List) -> QTreeWidgetItem:
+        node = QTreeWidgetItem([summarize_block(block)])
+        bold = node.font(0)
+        bold.setBold(True)
+        node.setFont(0, bold)
+        node.setData(0, Qt.ItemDataRole.UserRole, path)
+        node.setData(0, self._OBJECT_ROLE, block)
+        return node
+
     @staticmethod
     def _add_tree_node(parent, node: QTreeWidgetItem) -> None:
         if isinstance(parent, QTreeWidget):
@@ -976,31 +1058,54 @@ class MacroBuilderPage(QWidget):
         else:
             parent.addChild(node)
 
-    def _tree_item_at_path(self, path: List[int]) -> Optional[QTreeWidgetItem]:
+    def _tree_item_at_path(self, path: List) -> Optional[QTreeWidgetItem]:
+        """Find the tree row whose stored path equals `path`.
+
+        Resolved by scanning stored paths rather than walking child indices:
+        an If row's children are its two header rows, not its steps, so tree
+        child indices don't line up with model indices."""
         if not path:
             return None
-        node = self._action_list.topLevelItem(path[0])
-        for idx in path[1:]:
-            if node is None:
-                return None
-            node = node.child(idx)
-        return node
+        iterator = QTreeWidgetItemIterator(self._action_list)
+        while iterator.value() is not None:
+            item = iterator.value()
+            if list(item.data(0, Qt.ItemDataRole.UserRole)) == path:
+                return item
+            iterator += 1
+        return None
 
-    def _selected_path(self) -> Optional[List[int]]:
+    def _selected_path(self) -> Optional[List]:
         item = self._action_list.currentItem()
         if item is None:
             return None
         return list(item.data(0, Qt.ItemDataRole.UserRole))
 
-    def _selected_paths(self) -> List[List[int]]:
+    def _selected_paths(self) -> List[List]:
         return [list(i.data(0, Qt.ItemDataRole.UserRole)) for i in self._action_list.selectedItems()]
 
-    def _container_for_path(self, path: List[int]) -> List:
-        """The list that directly holds the item addressed by `path` — i.e.
-        every index but the last, walked through nested LoopBlock.actions."""
+    @staticmethod
+    def _is_header_path(path: Optional[List]) -> bool:
+        """True for an If block's Then/Else header row (path ends with the
+        branch marker instead of an index)."""
+        return bool(path) and isinstance(path[-1], str)
+
+    def _container_for_path(self, path: List) -> List:
+        """The list that directly holds the item addressed by `path`.
+
+        A path is a list of int indices, with `"then"`/`"else"` markers right
+        after an IfBlock's index selecting which of its two bodies to enter
+        (Loop/While have a single body, so their index alone is enough)."""
         container = self._actions
-        for idx in path[:-1]:
-            container = container[idx].actions
+        i = 0
+        while i < len(path) - 1:
+            entry = container[path[i]]
+            if isinstance(entry, IfBlock):
+                branch = path[i + 1]
+                container = entry.then_actions if branch == "then" else entry.else_actions
+                i += 2
+            else:
+                container = entry.actions
+                i += 1
         return container
 
     def _on_tree_dropped(self) -> None:
@@ -1020,7 +1125,9 @@ class MacroBuilderPage(QWidget):
     def _read_tree_as_actions(self, parent) -> List:
         """Rebuild a MacroItem list from the current tree structure under
         `parent` (the QTreeWidget itself, or a QTreeWidgetItem), recursing
-        into loop rows and replacing their .actions with their new children.
+        into container rows and replacing their bodies with their new
+        children. An If row's children are its two Then/Else header rows;
+        each branch is rebuilt from its header's children.
         """
         is_root = isinstance(parent, QTreeWidget)
         count = parent.topLevelItemCount() if is_root else parent.childCount()
@@ -1030,10 +1137,74 @@ class MacroBuilderPage(QWidget):
         for i in range(count):
             node = get_child(i)
             obj = node.data(0, self._OBJECT_ROLE)
-            if isinstance(obj, LoopBlock):
+            if isinstance(obj, IfBlock):
+                then_body: List = []
+                else_body: List = []
+                for j in range(node.childCount()):
+                    child = node.child(j)
+                    branch = child.data(0, self._BRANCH_ROLE)
+                    if branch == "else":
+                        else_body.extend(self._read_tree_as_actions(child))
+                    elif branch == "then":
+                        then_body.extend(self._read_tree_as_actions(child))
+                    else:
+                        # Shouldn't happen (drops on the If row are disabled),
+                        # but a stray direct child is better kept than lost.
+                        then_body.append(child.data(0, self._OBJECT_ROLE))
+                obj.then_actions = then_body
+                obj.else_actions = else_body
+            elif isinstance(obj, (LoopBlock, WhileBlock)):
                 obj.actions = self._read_tree_as_actions(node)
             result.append(obj)
         return result
+
+    # -- context menu ---------------------------------------------------------
+
+    def _on_context_menu(self, pos: QPoint) -> None:
+        menu = self._build_context_menu()
+        menu.exec(self._action_list.viewport().mapToGlobal(pos))
+
+    def _build_context_menu(self) -> QMenu:
+        """The tree's right-click menu, with actions enabled per selection.
+
+        Split from _on_context_menu so tests can assert enablement without
+        exec()ing a real menu.
+        """
+        menu = QMenu(self._action_list)
+        path = self._selected_path()
+        is_header = self._is_header_path(path)
+        has_item = path is not None and not is_header
+        is_block = False
+        if has_item:
+            entry = self._container_for_path(path)[path[-1]]
+            is_block = is_container(entry)
+
+        edit = menu.addAction("Edit…", self._on_edit_selected)
+        edit.setEnabled(path is not None)  # header routes to the parent If
+        duplicate = menu.addAction("Duplicate", self._on_duplicate)
+        duplicate.setEnabled(has_item)
+        remove = menu.addAction("Remove", self._on_remove)
+        remove.setEnabled(has_item)
+        menu.addSeparator()
+        wrap_loop = menu.addAction("Wrap in Loop…", self._on_loop_selected)
+        wrap_loop.setEnabled(has_item)
+        wrap_if = menu.addAction("Wrap in If…", self._on_wrap_in_if)
+        wrap_if.setEnabled(has_item)
+        wrap_while = menu.addAction("Wrap in While…", self._on_wrap_in_while)
+        wrap_while.setEnabled(has_item)
+        ungroup = menu.addAction("Ungroup block", self._on_ungroup)
+        ungroup.setEnabled(is_block)
+        menu.addSeparator()
+        move_up = menu.addAction("Move up", lambda: self._move(-1))
+        move_up.setEnabled(has_item)
+        move_down = menu.addAction("Move down", lambda: self._move(1))
+        move_down.setEnabled(has_item)
+        return menu
+
+    def _on_edit_selected(self) -> None:
+        item = self._action_list.currentItem()
+        if item is not None:
+            self._on_edit_item(item)
 
     # -- undo -----------------------------------------------------------------
 
@@ -1055,20 +1226,38 @@ class MacroBuilderPage(QWidget):
 
     # -- action ops ---------------------------------------------------------
 
-    def _on_add(self) -> None:
-        kind = self._add_type_combo.currentData()
+    def _on_add(self, kind: str = "input") -> None:
+        """Add a new step (or empty block) of `kind` at the insertion point."""
+        if kind == "loop":
+            count, ok = QInputDialog.getInt(
+                self, "Loop count", "Repeat the loop how many times?", 2, 1, 1_000_000
+            )
+            if not ok:
+                return
+            self._insert_new_items([LoopBlock(count=count)])
+            return
+
         if kind == "input":
             dialog = InputActionDialog(parent=self)
+        elif kind == "wait":
+            dialog = WaitForImageDialog(parent=self)
+        elif kind == "if":
+            dialog = IfBlockDialog(parent=self)
+        elif kind == "while":
+            dialog = WhileBlockDialog(parent=self)
         else:
             dialog = ActionConfigDialog(kind, parent=self)
         if dialog.exec() == QDialog.Accepted:
             new_actions = dialog.result_actions()
             if not new_actions:
                 return
-            self._push_undo()
-            container, index, parent_path = self._add_insertion_point()
-            container[index:index] = new_actions
-            self._refresh_list(select_path=parent_path + [index + len(new_actions) - 1])
+            self._insert_new_items(new_actions)
+
+    def _insert_new_items(self, new_items: List) -> None:
+        self._push_undo()
+        container, index, parent_path = self._add_insertion_point()
+        container[index:index] = new_items
+        self._refresh_list(select_path=parent_path + [index + len(new_items) - 1])
 
     def _add_insertion_point(self) -> tuple:
         """Where a new step from "Add" should land: (container, index,
@@ -1077,25 +1266,36 @@ class MacroBuilderPage(QWidget):
         top level).
 
         - Nothing selected → end of the top-level list (old behaviour).
-        - A loop selected → end of *that loop's own body*, so you can select
-          a loop and keep adding steps into it.
+        - A loop/while selected → end of *that block's own body*, so you can
+          select a block and keep adding steps into it.
+        - An If selected → end of its Then branch; a Then/Else header
+          selected → end of that specific branch.
         - A step selected → right after it, in whatever list it's already
-          in (top-level or inside a loop), so repeatedly selecting the step
+          in (top-level or inside a block), so repeatedly selecting the step
           you just added and hitting Add builds a sequence in place.
         """
         path = self._selected_path()
         if path is None:
             return self._actions, len(self._actions), []
 
+        if self._is_header_path(path):
+            body = self._container_for_path(path)
+            return body, len(body), path
+
         container = self._container_for_path(path)
         idx = path[-1]
         entry = container[idx]
-        if isinstance(entry, LoopBlock):
+        if isinstance(entry, IfBlock):
+            return entry.then_actions, len(entry.then_actions), path + ["then"]
+        if is_container(entry):
             return entry.actions, len(entry.actions), path
         return container, idx + 1, path[:-1]
 
     def _on_edit_item(self, item: QTreeWidgetItem, column: int = 0) -> None:
         path = list(item.data(0, Qt.ItemDataRole.UserRole))
+        # Editing a Then/Else header edits the parent If block itself.
+        if self._is_header_path(path):
+            path = path[:-1]
         container = self._container_for_path(path)
         idx = path[-1]
         entry = container[idx]
@@ -1112,6 +1312,27 @@ class MacroBuilderPage(QWidget):
                 self._refresh_list(select_path=path)
             return
 
+        # If/While blocks edit their condition (and caps) IN PLACE so the
+        # bodies survive; only leaf steps get wholesale replaced.
+        if isinstance(entry, IfBlock):
+            dialog = IfBlockDialog(existing=entry, parent=self)
+            if dialog.exec() == QDialog.Accepted and dialog.result_condition() is not None:
+                self._push_undo()
+                entry.condition = dialog.result_condition()
+                self._refresh_list(select_path=path)
+            return
+        if isinstance(entry, WhileBlock):
+            dialog = WhileBlockDialog(existing=entry, parent=self)
+            result = dialog.result_action() if dialog.exec() == QDialog.Accepted else None
+            if result is not None:
+                self._push_undo()
+                entry.condition = result.condition
+                entry.timeout_seconds = result.timeout_seconds
+                entry.max_iterations = result.max_iterations
+                entry.check_interval_ms = result.check_interval_ms
+                self._refresh_list(select_path=path)
+            return
+
         dialog = self._dialog_for_existing(entry)
         if dialog.exec() == QDialog.Accepted and dialog.result_action() is not None:
             self._push_undo()
@@ -1123,26 +1344,44 @@ class MacroBuilderPage(QWidget):
             return InputActionDialog(existing=action, parent=self)
         if isinstance(action, MouseMoveAction):
             return ActionConfigDialog("move", existing=action, parent=self)
+        if isinstance(action, WaitAction):
+            return WaitForImageDialog(existing=action, parent=self)
         return ActionConfigDialog("delay", existing=action, parent=self)
+
+    def _contiguous_selection(self, op_name: str) -> Optional[tuple]:
+        """Validate that the selection is a contiguous run of sibling steps.
+
+        Returns (container, start, end, parent_path), or None (after showing
+        a message) if the selection isn't wrappable. Then/Else header rows
+        are never part of a selection for wrapping.
+        """
+        paths = [p for p in self._selected_paths() if not self._is_header_path(p)]
+        if not paths:
+            QMessageBox.information(self, op_name, f"Select one or more steps to {op_name.lower()}.")
+            return None
+        parent_path = paths[0][:-1]
+        if any(p[:-1] != parent_path for p in paths):
+            QMessageBox.warning(
+                self, op_name, "Select steps that are all at the same level (siblings)."
+            )
+            return None
+        indices = sorted(p[-1] for p in paths)
+        if indices != list(range(indices[0], indices[-1] + 1)):
+            QMessageBox.warning(self, op_name, "Please select a contiguous range of steps.")
+            return None
+        container = self._container_for_path(parent_path + [indices[0]])
+        return container, indices[0], indices[-1], parent_path
 
     def _on_loop_selected(self) -> None:
         """Wrap the selected contiguous sibling rows into a loop block.
 
-        Loops can nest: a selection may already contain loop blocks, which
+        Blocks can nest: a selection may already contain blocks, which
         simply become part of the new outer loop's body.
         """
-        paths = self._selected_paths()
-        if not paths:
-            QMessageBox.information(self, "Loop", "Select one or more steps to loop.")
+        selection = self._contiguous_selection("Loop")
+        if selection is None:
             return
-        parent_path = paths[0][:-1]
-        if any(p[:-1] != parent_path for p in paths):
-            QMessageBox.warning(self, "Loop", "Select steps that are all at the same level (siblings).")
-            return
-        indices = sorted(p[-1] for p in paths)
-        if indices != list(range(indices[0], indices[-1] + 1)):
-            QMessageBox.warning(self, "Loop", "Please select a contiguous range of steps.")
-            return
+        container, start, end, parent_path = selection
 
         count, ok = QInputDialog.getInt(
             self, "Loop count", "Repeat the selected steps how many times?", 2, 1, 1_000_000
@@ -1151,35 +1390,72 @@ class MacroBuilderPage(QWidget):
             return
 
         self._push_undo()
-        container = self._container_for_path(parent_path + [indices[0]])
-        start, end = indices[0], indices[-1]
         block = LoopBlock(count=count, actions=[a for a in container[start:end + 1]])
         container[start:end + 1] = [block]
         self._refresh_list(select_path=parent_path + [start])
 
+    def _on_wrap_in_if(self) -> None:
+        """Wrap the selected steps into a new If block's Then branch."""
+        selection = self._contiguous_selection("If")
+        if selection is None:
+            return
+        container, start, end, parent_path = selection
+
+        dialog = IfBlockDialog(parent=self)
+        if dialog.exec() != QDialog.Accepted or dialog.result_action() is None:
+            return
+
+        self._push_undo()
+        block = dialog.result_action()
+        block.then_actions = [a for a in container[start:end + 1]]
+        container[start:end + 1] = [block]
+        self._refresh_list(select_path=parent_path + [start])
+
+    def _on_wrap_in_while(self) -> None:
+        """Wrap the selected steps into a new While block's body."""
+        selection = self._contiguous_selection("While")
+        if selection is None:
+            return
+        container, start, end, parent_path = selection
+
+        dialog = WhileBlockDialog(parent=self)
+        if dialog.exec() != QDialog.Accepted or dialog.result_action() is None:
+            return
+
+        self._push_undo()
+        block = dialog.result_action()
+        block.actions = [a for a in container[start:end + 1]]
+        container[start:end + 1] = [block]
+        self._refresh_list(select_path=parent_path + [start])
+
     def _on_ungroup(self) -> None:
-        """Expand the selected loop block back into its individual steps
-        (one level — a loop nested inside it stays intact and can be
-        ungrouped again separately)."""
+        """Expand the selected block back into its individual steps (one
+        level — a block nested inside it stays intact and can be ungrouped
+        again separately). An If block splices its Then steps followed by
+        its Else steps."""
         path = self._selected_path()
-        if path is None:
-            QMessageBox.information(self, "Ungroup", "Select a loop to ungroup.")
+        if path is None or self._is_header_path(path):
+            QMessageBox.information(self, "Ungroup", "Select a block to ungroup.")
             return
         container = self._container_for_path(path)
         idx = path[-1]
         entry = container[idx]
-        if not isinstance(entry, LoopBlock):
-            QMessageBox.information(self, "Ungroup", "Select a loop to ungroup.")
+        if not is_container(entry):
+            QMessageBox.information(self, "Ungroup", "Select a block to ungroup.")
             return
         self._push_undo()
-        container[idx:idx + 1] = list(entry.actions)
+        if isinstance(entry, IfBlock):
+            spliced = list(entry.then_actions) + list(entry.else_actions)
+        else:
+            spliced = list(entry.actions)
+        container[idx:idx + 1] = spliced
         parent_path = path[:-1]
-        select_path = (parent_path + [idx]) if entry.actions else (parent_path or None)
+        select_path = (parent_path + [idx]) if spliced else (parent_path or None)
         self._refresh_list(select_path=select_path)
 
     def _move(self, delta: int) -> None:
         path = self._selected_path()
-        if path is None:
+        if path is None or self._is_header_path(path):
             return
         container = self._container_for_path(path)
         idx = path[-1]
@@ -1192,7 +1468,7 @@ class MacroBuilderPage(QWidget):
 
     def _on_duplicate(self) -> None:
         path = self._selected_path()
-        if path is None:
+        if path is None or self._is_header_path(path):
             return
         container = self._container_for_path(path)
         idx = path[-1]
@@ -1208,13 +1484,13 @@ class MacroBuilderPage(QWidget):
     def _reassign_ids(self, item) -> None:
         from src.models.base import generate_id
         object.__setattr__(item, "id", generate_id())
-        if isinstance(item, LoopBlock):
-            for child in item.actions:
+        for _, body in child_lists(item):
+            for child in body:
                 self._reassign_ids(child)
 
     def _on_remove(self) -> None:
         path = self._selected_path()
-        if path is None:
+        if path is None or self._is_header_path(path):
             return
         container = self._container_for_path(path)
         idx = path[-1]
@@ -1283,6 +1559,16 @@ class MacroBuilderPage(QWidget):
                 item.actions, last_pos = self._insert_realistic_moves(item.actions, speed, last_pos)
                 result.append(item)
                 continue
+            if isinstance(item, (IfBlock, WhileBlock)):
+                # Each body is transformed starting from the current position,
+                # but afterwards the cursor's position is unknowable at build
+                # time (which branch ran? how many iterations?) — same
+                # conservatism as cursor-position clicks below.
+                for _, body in child_lists(item):
+                    body[:], _ = self._insert_realistic_moves(body, speed, last_pos)
+                last_pos = None
+                result.append(item)
+                continue
 
             target = self._position_of(item)
             # Never insert a move immediately before an item that's already a
@@ -1315,6 +1601,13 @@ class MacroBuilderPage(QWidget):
                 self._connect_loop_ends(item.actions, speed, top_level=False)
                 if item.count > 1:
                     self._append_loop_connector(item.actions, speed)
+            elif isinstance(item, (IfBlock, WhileBlock)):
+                # Recurse so fixed-count loops nested inside get their
+                # connectors, but the conditional blocks themselves don't:
+                # a While's iteration count (and an If's taken branch) can't
+                # be known at build time, so a connector could be wrong.
+                for _, body in child_lists(item):
+                    self._connect_loop_ends(body, speed, top_level=False)
 
         if top_level:
             macro_will_repeat = self._loop_check.isChecked() or self._repeat_spin.value() > 1
@@ -1339,6 +1632,10 @@ class MacroBuilderPage(QWidget):
     @staticmethod
     def _first_known_position(items: List) -> Optional[tuple]:
         for item in items:
+            if isinstance(item, (IfBlock, WhileBlock)):
+                # Conditional: whether (and where) the cursor first moves
+                # depends on the runtime condition — unknowable.
+                return None
             if isinstance(item, LoopBlock):
                 pos = MacroBuilderPage._first_known_position(item.actions)
                 if pos is not None:
@@ -1352,6 +1649,10 @@ class MacroBuilderPage(QWidget):
     @staticmethod
     def _last_known_position(items: List) -> Optional[tuple]:
         for item in reversed(items):
+            if isinstance(item, (IfBlock, WhileBlock)):
+                # Conditional: where the cursor ends up after this block
+                # depends on the runtime condition — unknowable.
+                return None
             if isinstance(item, LoopBlock):
                 pos = MacroBuilderPage._last_known_position(item.actions)
                 if pos is not None:

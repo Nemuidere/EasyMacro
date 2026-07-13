@@ -10,10 +10,17 @@ from src.models.action import (
     ActionType,
     ClickAction,
     DelayAction,
+    IfBlock,
+    ImageCondition,
     KeyPressAction,
     LoopBlock,
     MouseMoveAction,
+    WaitAction,
+    WhileBlock,
+    child_lists,
+    collect_image_files,
     flatten_items,
+    is_container,
     parse_action,
 )
 
@@ -301,3 +308,182 @@ class TestLoopBlockNesting:
         # + 1 trailing click(3,3)
         assert len(flat) == 10 * 26 + 1
         assert flat[-1].x == 3
+
+
+def _cond(**overrides) -> ImageCondition:
+    """A valid ImageCondition for tests, with optional field overrides."""
+    fields = {"image_file": "ref_test.png", "x1": 100, "y1": 200, "x2": 300, "y2": 260}
+    fields.update(overrides)
+    return ImageCondition(**fields)
+
+
+class TestImageCondition:
+    """Tests for the ImageCondition embedded value object."""
+
+    def test_create_with_defaults(self):
+        cond = _cond()
+
+        assert cond.color_variation == 20
+        assert cond.negate is False
+
+    def test_swapped_corners_are_normalized(self):
+        cond = _cond(x1=300, y1=260, x2=100, y2=200)
+
+        assert (cond.x1, cond.y1, cond.x2, cond.y2) == (100, 200, 300, 260)
+
+    def test_zero_area_region_rejected(self):
+        with pytest.raises(ValueError):
+            _cond(x1=100, x2=100)
+        with pytest.raises(ValueError):
+            _cond(y1=200, y2=200)
+
+    def test_negative_coordinates_allowed_for_secondary_monitors(self):
+        cond = _cond(x1=-1920, y1=-100, x2=-100, y2=500)
+
+        assert cond.x1 == -1920
+        assert cond.y1 == -100
+
+    def test_color_variation_bounds(self):
+        with pytest.raises(ValueError):
+            _cond(color_variation=-1)
+        with pytest.raises(ValueError):
+            _cond(color_variation=256)
+
+    def test_empty_image_file_rejected(self):
+        with pytest.raises(ValueError):
+            _cond(image_file="")
+
+
+class TestWaitAction:
+    """Tests for the wait-for-image leaf action."""
+
+    def test_create_with_defaults(self):
+        action = WaitAction(condition=_cond())
+
+        assert action.action_type == ActionType.WAIT_FOR_IMAGE
+        assert action.poll_interval_ms == 200
+        assert action.timeout_ms == 0
+        assert action.on_timeout == "error"
+
+    def test_poll_interval_floor(self):
+        with pytest.raises(ValueError):
+            WaitAction(condition=_cond(), poll_interval_ms=10)
+
+    def test_on_timeout_restricted(self):
+        with pytest.raises(ValueError):
+            WaitAction(condition=_cond(), on_timeout="explode")
+
+    def test_parse_action_maps_wait_for_image(self):
+        data = WaitAction(condition=_cond()).model_dump()
+
+        action = parse_action(data)
+
+        assert isinstance(action, WaitAction)
+
+
+class TestConditionBlocks:
+    """Tests for IfBlock/WhileBlock construction and validation."""
+
+    def test_if_block_bodies_default_empty(self):
+        block = IfBlock(condition=_cond())
+
+        assert block.then_actions == []
+        assert block.else_actions == []
+
+    def test_while_block_defaults(self):
+        block = WhileBlock(condition=_cond())
+
+        assert block.timeout_seconds == 0
+        assert block.max_iterations == 0
+        assert block.check_interval_ms == 100
+
+    def test_while_caps_must_be_non_negative(self):
+        with pytest.raises(ValueError):
+            WhileBlock(condition=_cond(), timeout_seconds=-1)
+        with pytest.raises(ValueError):
+            WhileBlock(condition=_cond(), max_iterations=-1)
+
+
+class TestMacroItemDiscrimination:
+    """Lock in smart-union discrimination for the full MacroItem union.
+
+    Discrimination relies on extra="forbid" + full model_dump()s always
+    carrying a key the other models forbid. This test pins that behavior for
+    every container nested inside every other container.
+    """
+
+    def test_nested_blocks_round_trip_with_exact_types(self):
+        from src.models.macro import Macro
+
+        macro = Macro(
+            name="conditional",
+            actions=[
+                IfBlock(
+                    condition=_cond(),
+                    then_actions=[
+                        WhileBlock(
+                            condition=_cond(image_file="ref_b.png"),
+                            actions=[WaitAction(condition=_cond()), ClickAction(x=1, y=2)],
+                        ),
+                    ],
+                    else_actions=[LoopBlock(count=2, actions=[ClickAction(x=3, y=4)])],
+                ),
+                WaitAction(condition=_cond(image_file="ref_c.png")),
+            ],
+        )
+
+        reloaded = Macro.model_validate(macro.model_dump())
+
+        if_block = reloaded.actions[0]
+        assert type(if_block) is IfBlock
+        while_block = if_block.then_actions[0]
+        assert type(while_block) is WhileBlock
+        assert type(while_block.actions[0]) is WaitAction
+        assert type(while_block.actions[1]) is ClickAction
+        assert type(if_block.else_actions[0]) is LoopBlock
+        assert type(reloaded.actions[1]) is WaitAction
+
+    def test_loop_block_still_discriminates_against_new_blocks(self):
+        block = LoopBlock(count=3, actions=[ClickAction(x=1, y=1)])
+
+        reloaded = LoopBlock.model_validate(block.model_dump())
+
+        assert type(reloaded) is LoopBlock
+
+
+class TestContainerHelpers:
+    """Tests for is_container / child_lists / collect_image_files."""
+
+    def test_is_container(self):
+        assert is_container(LoopBlock(count=1))
+        assert is_container(IfBlock(condition=_cond()))
+        assert is_container(WhileBlock(condition=_cond()))
+        assert not is_container(ClickAction(x=1, y=1))
+        assert not is_container(WaitAction(condition=_cond()))
+
+    def test_child_lists_shapes(self):
+        loop = LoopBlock(count=1, actions=[ClickAction(x=1, y=1)])
+        while_block = WhileBlock(condition=_cond(), actions=[ClickAction(x=2, y=2)])
+        if_block = IfBlock(condition=_cond(), then_actions=[ClickAction(x=3, y=3)])
+
+        assert child_lists(loop) == [("body", loop.actions)]
+        assert child_lists(while_block) == [("body", while_block.actions)]
+        assert child_lists(if_block) == [
+            ("then", if_block.then_actions),
+            ("else", if_block.else_actions),
+        ]
+        assert child_lists(ClickAction(x=1, y=1)) == []
+
+    def test_collect_image_files_finds_all_depths(self):
+        items = [
+            IfBlock(
+                condition=_cond(image_file="a.png"),
+                then_actions=[
+                    LoopBlock(count=2, actions=[WaitAction(condition=_cond(image_file="b.png"))]),
+                ],
+                else_actions=[WhileBlock(condition=_cond(image_file="c.png"))],
+            ),
+            ClickAction(x=1, y=1),
+        ]
+
+        assert collect_image_files(items) == {"a.png", "b.png", "c.png"}
