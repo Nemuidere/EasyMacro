@@ -201,6 +201,54 @@ class TestRegionCaptureFlow:
         assert warnings and cancels == [True]
         assert parent.isVisible()
 
+    def test_window_opacity_restored_after_capture(self, flow_env):
+        parent, make_flow, corners = flow_env
+        corners.extend([(100, 200), (300, 260)])
+
+        flow = make_flow()
+        flow.start()
+
+        assert parent.windowOpacity() == 1.0
+
+    def test_start_does_not_dismiss_the_owning_modal_dialog(self, qapp, monkeypatch):
+        """The owning window must be concealed, never hidden.
+
+        Hiding a QDialog exits its exec() loop, which used to dismiss the
+        whole If/While/Wait dialog as soon as "Capture region…" was pressed.
+        """
+        import src.ui.widgets.region_capture as rc_module
+        from PySide6.QtCore import QTimer, Signal
+        from PySide6.QtWidgets import QDialog, QWidget
+
+        class IdlePanel(QWidget):
+            """Stands in for a capture panel the user hasn't answered yet."""
+
+            captured = Signal(int, int)
+            cancelled = Signal()
+
+            def __init__(self, parent=None, instruction=None, title=None):
+                super().__init__(parent)
+
+            def show(self):
+                pass
+
+        monkeypatch.setattr(rc_module, "CapturePanel", IdlePanel)
+
+        dialog = QDialog()
+        dialog.setModal(True)
+        host = QWidget(dialog)
+        flow = rc_module.RegionCaptureFlow(host)
+
+        closed_by_test = []
+        QTimer.singleShot(0, flow.start)
+        QTimer.singleShot(150, lambda: (closed_by_test.append(True), dialog.accept()))
+        dialog.exec()
+
+        # If start() had hidden the dialog, exec() would have returned at t=0,
+        # long before our own timer got to close it.
+        assert closed_by_test == [True]
+        assert dialog.windowOpacity() == 0.0  # concealed, but still alive
+
 
 def test_save_reference_pixmap_rejects_null(qapp, monkeypatch, tmp_path):
     import src.services.image_asset_service as asset_module

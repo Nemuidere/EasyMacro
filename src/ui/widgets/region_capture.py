@@ -6,9 +6,12 @@ full-screen overlay — see that module's history note): first the region's
 top-left corner, then its bottom-right. The rectangle is then screenshotted
 via Qt and saved as a reference-image asset.
 
-The owning top-level window is hidden for the duration of the flow so the
-builder dialog can't end up inside the reference image; it is re-shown on
-every exit path (success, cancel, or error).
+The owning top-level window is made fully transparent for the duration of the
+flow so the builder dialog can't end up inside the reference image; it is
+restored on every exit path (success, cancel, or error). It must NOT be
+hidden: ``QDialog::setVisible(False)`` exits a modal ``exec()`` loop, so
+hiding it dismissed the whole If/While/Wait dialog the moment the user pressed
+"Capture region…".
 
 DPI note: corner coordinates come from QCursor.pos() (logical pixels) while
 grabWindow returns device pixels. At 100% Windows display scaling these
@@ -47,7 +50,7 @@ class RegionCaptureFlow(QObject):
         """Initialize the flow.
 
         Args:
-            parent_widget: Widget whose top-level window is hidden during
+            parent_widget: Widget whose top-level window is concealed during
                 capture; also parents the capture panels.
         """
         super().__init__(parent_widget)
@@ -55,12 +58,11 @@ class RegionCaptureFlow(QObject):
         self._parent_widget = parent_widget
         self._corner1: Optional[QPoint] = None
         self._finished = False
+        self._saved_opacity = 1.0
 
     def start(self) -> None:
-        """Begin the flow: hide the owning window, capture corner one."""
-        window = self._parent_widget.window()
-        if window is not None:
-            window.hide()
+        """Begin the flow: conceal the owning window, capture corner one."""
+        self._conceal_window()
         self._show_panel(
             "Step 1/2: Move the mouse to the region's TOP-LEFT corner,\n"
             "click “Capture”, then hold still during the countdown.",
@@ -132,9 +134,24 @@ class RegionCaptureFlow(QObject):
         self._restore_window()
         self.cancelled.emit()
 
+    def _conceal_window(self) -> None:
+        """Make the owning window invisible without hiding it.
+
+        Zero opacity keeps the window (and, crucially, a modal dialog's
+        ``exec()`` event loop) alive while keeping it out of the screenshot.
+        """
+        window = self._parent_widget.window()
+        if window is None:
+            return
+        self._saved_opacity = window.windowOpacity()
+        window.setWindowOpacity(0.0)
+
     def _restore_window(self) -> None:
         window = self._parent_widget.window()
-        if window is not None and not window.isVisible():
+        if window is None:
+            return
+        window.setWindowOpacity(self._saved_opacity)
+        if not window.isVisible():
             window.show()
-            window.raise_()
-            window.activateWindow()
+        window.raise_()
+        window.activateWindow()
